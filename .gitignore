@@ -1,0 +1,19 @@
+# Build artifacts
+/go-ws-server
+/dist/
+
+# Local env
+.env
+.env.*
+!.env.example
+
+# Go
+*.test
+*.out
+coverage.out
+
+# Editor
+.DS_Store
+.idea/
+.vscode/
+*.swp
