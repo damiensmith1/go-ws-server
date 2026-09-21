@@ -3,6 +3,7 @@ package connection
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -11,6 +12,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/damiensmith1/go-ws-server/bus"
+	"github.com/damiensmith1/go-ws-server/handler"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
 	"github.com/damiensmith1/go-ws-server/metrics"
 	"github.com/damiensmith1/go-ws-server/protocol"
@@ -313,4 +315,130 @@ func TestDispatchRejectsInvalidJob(t *testing.T) {
 			t.Fatalf("invalid job accepted: %s -> %v", bad, got)
 		}
 	}
+}
+
+func TestDispatchCustomVerb(t *testing.T) {
+	h := newHarness(t)
+	reg := handler.NewRegistry()
+	reg.Register("echo", func(_ context.Context, req *handler.Request, _ handler.Responder) (string, error) {
+		return "echoed " + req.Topic(), nil
+	})
+	h.deps.Registry = reg
+
+	got := h.only(h.send(`{"type":"echo","topic":"anything","reqID":"c1"}`))
+	if got["type"] != protocol.OutSuccess {
+		t.Fatalf("custom verb -> %v", got)
+	}
+	if got["message"] != "echoed anything" {
+		t.Fatalf("message = %v", got["message"])
+	}
+	if got["reqID"] != "c1" {
+		t.Fatalf("reqID = %v, want c1", got["reqID"])
+	}
+}
+
+// Built-in validation knows nothing about a custom verb's fields, so it
+// must not reject one as unknown — but the version check still applies.
+func TestDispatchCustomVerbBypassesFieldValidation(t *testing.T) {
+	h := newHarness(t)
+	reg := handler.NewRegistry()
+	reg.Register("bare", func(context.Context, *handler.Request, handler.Responder) (string, error) {
+		return "ok", nil
+	})
+	h.deps.Registry = reg
+
+	// No topic, no data — fields the built-in verbs would require.
+	got := h.only(h.send(`{"type":"bare"}`))
+	if got["type"] != protocol.OutSuccess {
+		t.Fatalf("custom verb was rejected by built-in validation: %v", got)
+	}
+
+	got = h.only(h.send(`{"type":"bare","version":99}`))
+	if got["type"] != protocol.OutError {
+		t.Fatalf("custom verb skipped the version check: %v", got)
+	}
+}
+
+// A verb reaches a metric label, so the label set must stay bounded:
+// registered verbs are known, everything else is "unknown".
+func TestCustomVerbIsBoundedInMetrics(t *testing.T) {
+	reg := handler.NewRegistry()
+	reg.Register("myVerb", func(context.Context, *handler.Request, handler.Responder) (string, error) {
+		return "", nil
+	})
+
+	if got := frameTypeLabel("myVerb", reg); got != "myVerb" {
+		t.Fatalf("registered verb labelled %q", got)
+	}
+	if got := frameTypeLabel("../../etc/passwd", reg); got != "unknown" {
+		t.Fatalf("junk verb labelled %q, want \"unknown\"", got)
+	}
+	if got := frameTypeLabel(protocol.TypePublish, reg); got != protocol.TypePublish {
+		t.Fatalf("built-in verb labelled %q", got)
+	}
+}
+
+func TestDispatchMiddleware(t *testing.T) {
+	t.Run("wraps built-in verbs too", func(t *testing.T) {
+		h := newHarness(t)
+		var seen []string
+		h.deps.Middleware = []handler.Middleware{
+			func(next handler.Handler) handler.Handler {
+				return func(ctx context.Context, req *handler.Request, rw handler.Responder) (string, error) {
+					seen = append(seen, req.Type())
+					return next(ctx, req, rw)
+				}
+			},
+		}
+
+		h.send(`{"type":"subscribe","topic":"chat"}`)
+		if len(seen) != 1 || seen[0] != "subscribe" {
+			t.Fatalf("middleware saw %v, want [subscribe]", seen)
+		}
+	})
+
+	t.Run("a rejecting middleware stops the handler", func(t *testing.T) {
+		h := newHarness(t)
+		h.deps.Middleware = []handler.Middleware{
+			func(handler.Handler) handler.Handler {
+				return func(context.Context, *handler.Request, handler.Responder) (string, error) {
+					return "", errors.New("blocked by policy")
+				}
+			},
+		}
+
+		got := h.only(h.send(`{"type":"subscribe","topic":"chat"}`))
+		if got["type"] != protocol.OutError {
+			t.Fatalf("rejected frame -> %v", got)
+		}
+		if !strings.Contains(got["message"].(string), "blocked by policy") {
+			t.Fatalf("message = %v", got["message"])
+		}
+		// The subscription must not have happened.
+		if h.mr.Exists("topic:chat") {
+			t.Fatal("the handler ran despite the middleware rejecting the frame")
+		}
+	})
+
+	t.Run("identity reaches the handler", func(t *testing.T) {
+		h := newHarness(t)
+		var got *handler.Request
+		reg := handler.NewRegistry()
+		reg.Register("inspect", func(_ context.Context, req *handler.Request, _ handler.Responder) (string, error) {
+			got = req
+			return "ok", nil
+		})
+		h.deps.Registry = reg
+
+		h.send(`{"type":"inspect"}`)
+		if got == nil {
+			t.Fatal("handler did not run")
+		}
+		if got.UserKey != "alice" {
+			t.Fatalf("UserKey = %q, want alice", got.UserKey)
+		}
+		if got.ConnID != h.conn.SubscriberID() {
+			t.Fatalf("ConnID = %q, want the connection's id", got.ConnID)
+		}
+	})
 }

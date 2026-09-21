@@ -41,6 +41,7 @@ import (
 	"github.com/damiensmith1/go-ws-server/auth"
 	"github.com/damiensmith1/go-ws-server/authz"
 	"github.com/damiensmith1/go-ws-server/bus"
+	"github.com/damiensmith1/go-ws-server/handler"
 	"github.com/damiensmith1/go-ws-server/internal/app"
 	"github.com/damiensmith1/go-ws-server/internal/config"
 	"github.com/damiensmith1/go-ws-server/internal/logger"
@@ -85,6 +86,14 @@ type Options struct {
 	// Authorizer gates per-topic access. Nil allows every topic to every
 	// authenticated client, which is only appropriate for a single tenant.
 	Authorizer authz.Authorizer
+
+	// Registry holds handlers for custom verbs, consulted before the
+	// built-in ones. Nil means only the built-in verbs exist.
+	Registry *handler.Registry
+
+	// Middleware wraps every inbound frame, built-in verbs included. The
+	// first element is outermost.
+	Middleware []handler.Middleware
 
 	// Judge replaces exact-topic fan-out with a per-message routing
 	// decision, made once at publish time and carried with the message so
@@ -246,6 +255,8 @@ func New(opts Options) (*Server, error) {
 		Verifier:           opts.Verifier,
 		Authorizer:         opts.Authorizer,
 		Metrics:            opts.Metrics,
+		Registry:           opts.Registry,
+		Middleware:         opts.Middleware,
 		Judge:              opts.Judge,
 		Candidates:         opts.Candidates,
 		JudgeTimeout:       opts.JudgeTimeout,

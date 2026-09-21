@@ -82,6 +82,57 @@ the command uses. `srv.Bus()` publishes from inside the host process
 without a websocket round trip, and `srv.Metrics().Registry()` exposes the
 collectors on your own HTTP server instead of a second listener.
 
+### Custom verbs and middleware
+
+`handler.Registry` adds verbs without forking the dispatch switch:
+
+```go
+reg := handler.NewRegistry()
+reg.Register("typing", func(ctx context.Context, req *handler.Request, rw handler.Responder) (string, error) {
+    // req carries UserKey, ConnID, Claims and the decoded Envelope.
+    return "ok", nil
+})
+
+opts.Registry = reg
+```
+
+Returning a non-empty string sends a success frame carrying it, tagged
+with the request's `reqID`. Returning an error sends an error frame with
+the error's message — **error text is client-facing**, so keep internal
+detail out of it. Returning `"", nil` sends nothing, which is what a
+handler that already wrote its own frames through the `Responder` wants.
+
+The registry is consulted **before** the built-in verbs, so a deployment
+can override `publish` or `subscribe`. That is deliberate but sharp:
+overriding a built-in means taking on its authorization and locking too.
+
+Built-in validation knows the built-in verbs' required fields and nothing
+about yours, so it is skipped for registered verbs — your handler
+validates its own frame. The protocol version check still applies.
+
+`handler.Middleware` wraps every frame, built-in verbs included:
+
+```go
+opts.Middleware = []handler.Middleware{
+    func(next handler.Handler) handler.Handler {
+        return func(ctx context.Context, req *handler.Request, rw handler.Responder) (string, error) {
+            start := time.Now()
+            reply, err := next(ctx, req, rw)
+            log.Info("frame", "type", req.Type(), "took", time.Since(start))
+            return reply, err
+        }
+    },
+}
+```
+
+The first element is outermost. A middleware that returns without calling
+`next` has rejected the frame, and its error reaches the client like any
+other.
+
+Verbs reach a metric label, so the label set stays bounded to what the
+server knows: built-ins plus whatever you register. Anything else is
+counted as `unknown` rather than minting a time series per junk string.
+
 ### Custom routing: the `Judge` hook
 
 By default a topic's subscribers all receive every message published to
@@ -133,7 +184,8 @@ filtered, so existing implementations keep working unchanged.
 | `wsserver` | Constructing and running the server. |
 | `auth`     | Implementing `Verifier` to authenticate upgrades. |
 | `authz`    | Implementing `Authorizer` to gate per-topic access. |
-| `bus`      | `Subscriber` / `BroadcastTarget`, and publishing in-process. |
+| `bus`      | `Subscriber` / `BroadcastTarget`, the `Judge` hook, and publishing in-process. |
+| `handler`  | Custom verbs and middleware for inbound frames. |
 | `protocol` | Encoding and decoding wire frames. |
 | `metrics`  | The collector set and its registry. |
 

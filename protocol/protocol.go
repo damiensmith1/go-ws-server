@@ -156,12 +156,22 @@ func ParseValidUntil(s string) (time.Time, bool, error) {
 // Validate enforces the same shape rules as the TS validateParsedMessage.
 // It does NOT validate `data` content (which is opaque to the server) or
 // the parseability of `since` cursors (handled at subscribe time).
+// ValidateVersion checks only the protocol version. It is split out
+// because a custom verb's fields are unknown to this package, but its
+// version still has to be honoured.
+func ValidateVersion(env *Envelope) error {
+	if v := env.Version; v != nil && (*v < MinVersion || *v > Version) {
+		return fmt.Errorf("Unsupported protocol version %d. This server supports %d to %d.", *v, MinVersion, Version)
+	}
+	return nil
+}
+
 func Validate(env *Envelope) error {
 	if env.Type == "" {
 		return errors.New("Message must have a type.")
 	}
-	if v := env.Version; v != nil && (*v < MinVersion || *v > Version) {
-		return fmt.Errorf("Unsupported protocol version %d. This server supports %d to %d.", *v, MinVersion, Version)
+	if err := ValidateVersion(env); err != nil {
+		return err
 	}
 	switch env.Type {
 	case TypeLockTopic, TypeUnlockTopic, TypeRenewLock:

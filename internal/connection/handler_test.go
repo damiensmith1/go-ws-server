@@ -22,12 +22,12 @@ func TestFrameTypeLabel_BoundsCardinality(t *testing.T) {
 		protocol.TypeScheduleJob,
 		protocol.TypeBroadcast,
 	} {
-		if got := frameTypeLabel(known); got != known {
+		if got := frameTypeLabel(known, nil); got != known {
 			t.Fatalf("known type %q became %q", known, got)
 		}
 	}
 	for _, junk := range []string{"", "SUBSCRIBE", "../../etc/passwd", "a-random-string"} {
-		if got := frameTypeLabel(junk); got != "unknown" {
+		if got := frameTypeLabel(junk, nil); got != "unknown" {
 			t.Fatalf("junk type %q became %q, want \"unknown\"", junk, got)
 		}
 	}

@@ -23,6 +23,7 @@ import (
 	"github.com/damiensmith1/go-ws-server/auth"
 	"github.com/damiensmith1/go-ws-server/authz"
 	"github.com/damiensmith1/go-ws-server/bus"
+	"github.com/damiensmith1/go-ws-server/handler"
 	"github.com/damiensmith1/go-ws-server/internal/config"
 	"github.com/damiensmith1/go-ws-server/internal/connection"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
@@ -145,6 +146,9 @@ type Ext struct {
 	Authorizer authz.Authorizer
 	Metrics    *metrics.Metrics
 
+	Registry   *handler.Registry
+	Middleware []handler.Middleware
+
 	Judge              bus.Judge
 	Candidates         bus.CandidateSource
 	JudgeTimeout       time.Duration
@@ -236,6 +240,8 @@ func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 		OnSchedulerWake:  sched.Wake,
 		Authorizer:       authorizer,
 		PresenceTopic:    cfg.PresenceTopic,
+		Registry:         ext.Registry,
+		Middleware:       ext.Middleware,
 		Metrics:          m,
 	}
 

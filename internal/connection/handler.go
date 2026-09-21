@@ -12,6 +12,7 @@ import (
 
 	"github.com/damiensmith1/go-ws-server/authz"
 	"github.com/damiensmith1/go-ws-server/bus"
+	"github.com/damiensmith1/go-ws-server/handler"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
 	"github.com/damiensmith1/go-ws-server/internal/redisx"
 	"github.com/damiensmith1/go-ws-server/metrics"
@@ -34,6 +35,14 @@ type Deps struct {
 	// Authorizer gates per-topic access. A nil value allows everything,
 	// which is the behaviour the server had before authorization existed.
 	Authorizer authz.Authorizer
+
+	// Registry holds handlers for custom verbs. It is consulted before
+	// the built-in switch, so a registered verb overrides a built-in one.
+	Registry *handler.Registry
+
+	// Middleware wraps every frame, built-in verbs included. The first
+	// element is outermost.
+	Middleware []handler.Middleware
 
 	// PresenceTopic receives connect and disconnect events for the first
 	// and last socket of each userKey. Empty disables the feed, which is
@@ -79,8 +88,14 @@ var knownFrameTypes = map[string]struct{}{
 	protocol.TypeListSubs:    {},
 }
 
-func frameTypeLabel(t string) string {
+// frameTypeLabel bounds the `type` label to verbs the server knows,
+// built-in or registered. Anything else is client-controlled input and
+// must not reach a label verbatim.
+func frameTypeLabel(t string, reg *handler.Registry) string {
 	if _, ok := knownFrameTypes[t]; ok {
+		return t
+	}
+	if _, ok := reg.Lookup(t); ok {
 		return t
 	}
 	return "unknown"
@@ -154,7 +169,7 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 	if reqID != "" {
 		log = log.With("reqID", reqID)
 	}
-	m.FramesReceived.WithLabelValues(frameTypeLabel(env.Type)).Inc()
+	m.FramesReceived.WithLabelValues(frameTypeLabel(env.Type, d.Registry)).Inc()
 
 	allowed, err := ratelimit.Allow(ctx, d.RDB, "msg", c.UserKey(), d.MessageRateLimit)
 	if err != nil {
@@ -168,7 +183,16 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 		return
 	}
 
-	if err := protocol.Validate(&env); err != nil {
+	// Built-in validation knows the built-in verbs' required fields and
+	// nothing about a custom verb's, so it would reject every registered
+	// verb as unknown. A registered handler validates its own frame; the
+	// version check still applies to both.
+	if _, custom := d.Registry.Lookup(env.Type); !custom {
+		if err := protocol.Validate(&env); err != nil {
+			c.SendNow(ctx, protocol.EncodeError(reqID, err.Error()))
+			return
+		}
+	} else if err := protocol.ValidateVersion(&env); err != nil {
 		c.SendNow(ctx, protocol.EncodeError(reqID, err.Error()))
 		return
 	}
@@ -177,35 +201,17 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 
 	d.Log = log
 
-	var (
-		responseMsg string
-		handlerErr  error
-	)
-	switch env.Type {
-	case protocol.TypeSubscribe:
-		responseMsg, handlerErr = handleSubscribe(ctx, c, &env, d)
-	case protocol.TypeUnsubscribe:
-		responseMsg, handlerErr = handleUnsubscribe(ctx, c, &env, d)
-	case protocol.TypePublish:
-		responseMsg, handlerErr = handlePublish(ctx, c, &env, d)
-	case protocol.TypeLockTopic:
-		responseMsg, handlerErr = handleLockTopic(ctx, c, &env, d)
-	case protocol.TypeUnlockTopic:
-		responseMsg, handlerErr = handleUnlockTopic(ctx, c, &env, d)
-	case protocol.TypeRenewLock:
-		responseMsg, handlerErr = handleRenewLock(ctx, c, &env, d)
-	case protocol.TypeScheduleJob:
-		responseMsg, handlerErr = handleScheduleJob(ctx, c, &env, d)
-	case protocol.TypeRemoveJob:
-		responseMsg, handlerErr = handleRemoveJob(ctx, c, &env, d)
-	case protocol.TypePresence:
-		_, handlerErr = handlePresence(ctx, c, &env, d)
-	case protocol.TypeListSubs:
-		_, handlerErr = handleListSubscriptions(ctx, c, &env, d)
-	case protocol.TypeBroadcast:
-		// Broadcasts are fire-and-forget — the sender doesn't get a reply.
-		_, handlerErr = handleBroadcast(ctx, c, &env, d)
+	req := &handler.Request{
+		UserKey:  c.UserKey(),
+		ConnID:   c.SubscriberID(),
+		Claims:   c.Claims(),
+		Envelope: &env,
 	}
+	h := handler.Chain(func(ctx context.Context, req *handler.Request, _ handler.Responder) (string, error) {
+		return route(ctx, c, req.Envelope, d)
+	}, d.Middleware...)
+
+	responseMsg, handlerErr := h(ctx, req, c)
 
 	if handlerErr != nil {
 		log.Error("message handling failed", "type", env.Type, "err", handlerErr.Error())
@@ -215,6 +221,51 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 	if responseMsg != "" {
 		c.SendNow(ctx, protocol.EncodeSuccess(reqID, responseMsg))
 	}
+}
+
+// route picks the handler for a verb. The registry is consulted first,
+// so a registered verb overrides a built-in one — which is what makes
+// "extend without forking" real, at the cost of making an override
+// responsible for the authorization and locking the built-in did.
+func route(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if h, ok := d.Registry.Lookup(env.Type); ok {
+		return h(ctx, &handler.Request{
+			UserKey:  c.UserKey(),
+			ConnID:   c.SubscriberID(),
+			Claims:   c.Claims(),
+			Envelope: env,
+		}, c)
+	}
+
+	switch env.Type {
+	case protocol.TypeSubscribe:
+		return handleSubscribe(ctx, c, env, d)
+	case protocol.TypeUnsubscribe:
+		return handleUnsubscribe(ctx, c, env, d)
+	case protocol.TypePublish:
+		return handlePublish(ctx, c, env, d)
+	case protocol.TypeLockTopic:
+		return handleLockTopic(ctx, c, env, d)
+	case protocol.TypeUnlockTopic:
+		return handleUnlockTopic(ctx, c, env, d)
+	case protocol.TypeRenewLock:
+		return handleRenewLock(ctx, c, env, d)
+	case protocol.TypeScheduleJob:
+		return handleScheduleJob(ctx, c, env, d)
+	case protocol.TypeRemoveJob:
+		return handleRemoveJob(ctx, c, env, d)
+	case protocol.TypePresence:
+		_, err := handlePresence(ctx, c, env, d)
+		return "", err
+	case protocol.TypeListSubs:
+		_, err := handleListSubscriptions(ctx, c, env, d)
+		return "", err
+	case protocol.TypeBroadcast:
+		// Broadcasts are fire-and-forget — the sender doesn't get a reply.
+		_, err := handleBroadcast(ctx, c, env, d)
+		return "", err
+	}
+	return "", nil
 }
 
 func handleSubscribe(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
