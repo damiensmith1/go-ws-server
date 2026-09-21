@@ -149,6 +149,9 @@ type Ext struct {
 	Registry   *handler.Registry
 	Middleware []handler.Middleware
 
+	OnConnect    handler.LifecycleFunc
+	OnDisconnect handler.LifecycleFunc
+
 	Judge              bus.Judge
 	Candidates         bus.CandidateSource
 	JudgeTimeout       time.Duration
@@ -244,6 +247,8 @@ func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 		AckCursorTTL:     cfg.AckCursorTTL,
 		Registry:         ext.Registry,
 		Middleware:       ext.Middleware,
+		OnConnect:        ext.OnConnect,
+		OnDisconnect:     ext.OnDisconnect,
 		Metrics:          m,
 	}
 
@@ -482,6 +487,11 @@ func serveWS(
 		Metrics:             deps.Metrics,
 	}, log)
 
+	if deps.OnConnect != nil {
+		deps.OnConnect(rootCtx, handler.Conn{
+			ConnID: conn.SubscriberID(), UserKey: conn.UserKey(), Claims: res.Claims,
+		})
+	}
 	if first := hub.Add(conn); first {
 		connection.PublishPresence(rootCtx, conn.UserKey(), connection.PresenceConnected, deps)
 	}

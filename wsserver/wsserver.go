@@ -95,6 +95,16 @@ type Options struct {
 	// first element is outermost.
 	Middleware []handler.Middleware
 
+	// OnConnect and OnDisconnect notify you of connection lifecycle, for
+	// per-connection state an embedder keeps outside the server. Both
+	// fire for every socket, unlike PresenceTopic which reports only the
+	// first and last for a userKey.
+	//
+	// They run synchronously on the connection's goroutine and must not
+	// block. See handler.LifecycleFunc.
+	OnConnect    handler.LifecycleFunc
+	OnDisconnect handler.LifecycleFunc
+
 	// Judge replaces exact-topic fan-out with a per-message routing
 	// decision, made once at publish time and carried with the message so
 	// every instance and every replay agrees. Nil keeps exact-topic match.
@@ -262,6 +272,8 @@ func New(opts Options) (*Server, error) {
 		Metrics:            opts.Metrics,
 		Registry:           opts.Registry,
 		Middleware:         opts.Middleware,
+		OnConnect:          opts.OnConnect,
+		OnDisconnect:       opts.OnDisconnect,
 		Judge:              opts.Judge,
 		Candidates:         opts.Candidates,
 		JudgeTimeout:       opts.JudgeTimeout,

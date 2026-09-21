@@ -133,6 +133,32 @@ Verbs reach a metric label, so the label set stays bounded to what the
 server knows: built-ins plus whatever you register. Anything else is
 counted as `unknown` rather than minting a time series per junk string.
 
+### Connection lifecycle
+
+`OnConnect` and `OnDisconnect` report every socket opening and closing,
+for per-connection state you keep outside the server:
+
+```go
+opts.OnDisconnect = func(ctx context.Context, c handler.Conn) {
+    myStore.drop(c.ConnID) // c also carries UserKey and Claims
+}
+```
+
+`c.ConnID` is the same identifier that appears as `connID` in the logs,
+that `handler.Request` carries, and that a `bus.Judge` addresses a
+subscriber by — so state created on connect can be torn down on
+disconnect against one stable key.
+
+Distinct from `PRESENCE_TOPIC`, which reports only the **first and last**
+socket for a userKey. That is the right granularity for "is this user
+online"; it is the wrong one for per-connection state, since a user with
+three sockets produces one presence event and three lifecycle calls.
+
+Both run synchronously on the connection's goroutine, so they must not
+block: a slow `OnConnect` delays the client's first frame and a slow
+`OnDisconnect` delays cleanup. One Redis round trip is fine; anything
+longer belongs in a goroutine.
+
 ### Custom routing: the `Judge` hook
 
 By default a topic's subscribers all receive every message published to

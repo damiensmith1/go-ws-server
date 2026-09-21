@@ -48,6 +48,13 @@ type Deps struct {
 	// which leaks a key per userKey per topic.
 	AckCursorTTL time.Duration
 
+	// OnConnect and OnDisconnect notify an embedder of connection
+	// lifecycle. Unlike the presence feed, these fire for every socket
+	// rather than only the first and last for a userKey, which is what
+	// per-connection state needs.
+	OnConnect    handler.LifecycleFunc
+	OnDisconnect handler.LifecycleFunc
+
 	// PresenceTopic receives connect and disconnect events for the first
 	// and last socket of each userKey. Empty disables the feed, which is
 	// the default: publishing user activity to a topic anyone might
@@ -514,6 +521,14 @@ func PublishPresence(ctx context.Context, userKey, event string, d Deps) {
 // locks and remove all topic subscriptions.
 func Cleanup(ctx context.Context, c *Conn, d Deps, isLast bool) {
 	d.Bus.RemoveSubscriberAll(c)
+
+	// Before anything else tears down, so an embedder can still see the
+	// connection's identity and claims.
+	if d.OnDisconnect != nil {
+		d.OnDisconnect(ctx, handler.Conn{
+			ConnID: c.SubscriberID(), UserKey: c.UserKey(), Claims: c.Claims(),
+		})
+	}
 
 	if isLast {
 		PublishPresence(ctx, c.UserKey(), PresenceDisconnected, d)

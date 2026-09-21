@@ -18,6 +18,32 @@ import (
 	"github.com/damiensmith1/go-ws-server/protocol"
 )
 
+// Conn identifies a connection for lifecycle callbacks.
+type Conn struct {
+	// ConnID identifies the socket. It is the same value that appears as
+	// connID in the logs, that Request carries, and that a bus.Judge
+	// addresses a subscriber by — so per-connection state an embedder
+	// keeps can be created and torn down against one stable key.
+	ConnID string
+
+	// UserKey is the verified identity from auth.Result.
+	UserKey string
+
+	// Claims are the credential's claims, or nil.
+	Claims map[string]any
+}
+
+// LifecycleFunc is called when a connection opens or closes.
+//
+// It runs synchronously on the connection's own goroutine, so it must not
+// block: a slow OnConnect delays the client's first frame, and a slow
+// OnDisconnect delays cleanup. Do the work inline only if it is fast,
+// such as a single Redis round trip; hand anything longer to a goroutine.
+//
+// The context is cancelled when the server shuts down, and on disconnect
+// it is already bounded by the cleanup deadline.
+type LifecycleFunc func(ctx context.Context, c Conn)
+
 // Request is one inbound frame together with who sent it.
 type Request struct {
 	// UserKey is the verified identity from auth.Result.
