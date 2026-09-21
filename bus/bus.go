@@ -65,10 +65,32 @@ type Config struct {
 	StreamMaxLength int64
 	StreamTTL       time.Duration
 
+	// Judge replaces exact-topic fan-out with a per-message routing
+	// decision. Nil keeps exact-topic match. It requires Candidates; a
+	// Judge without one has nothing to decide over and is ignored.
+	Judge Judge
+
+	// Candidates supplies the cluster-wide subscriber set a Judge decides
+	// over. Nil disables judging.
+	Candidates CandidateSource
+
+	// JudgeTimeout bounds one Judge call. Zero uses DefaultJudgeTimeout.
+	// A Judge is on the publish path, so an unbounded one would stall the
+	// publishing client, not just its own goroutine.
+	JudgeTimeout time.Duration
+
+	// JudgeFailurePolicy is applied when Judge returns an error or times
+	// out. The zero value is DeliverAll.
+	JudgeFailurePolicy FailurePolicy
+
 	// Metrics is optional. A nil value gets a private collector set, so
 	// call sites never need a nil check.
 	Metrics *metrics.Metrics
 }
+
+// DefaultJudgeTimeout bounds a Judge call when Config.JudgeTimeout is
+// unset.
+const DefaultJudgeTimeout = 5 * time.Second
 
 // Bus is the running pub/sub + replay coordinator.
 type Bus struct {
@@ -188,6 +210,12 @@ func (b *Bus) dispatch(msg *redis.Message) {
 type wireTopicPayload struct {
 	StreamID string          `json:"streamId"`
 	Data     json.RawMessage `json:"data"`
+
+	// Recipients is the subscriber ID allowlist decided by a Judge at
+	// publish time. Nil means "every subscriber of this topic", which is
+	// what a server with no Judge always publishes and what every message
+	// written before a Judge was configured looks like on replay.
+	Recipients []string `json:"recipients,omitempty"`
 }
 
 func (b *Bus) handleTopic(topic, payload string) {
@@ -204,6 +232,18 @@ func (b *Bus) handleTopic(topic, payload string) {
 	start := time.Now()
 	buffered := 0
 
+	// A nil Recipients means every subscriber, so a server with no Judge —
+	// and every message published before one was configured — behaves
+	// exactly as before.
+	var allowed map[string]struct{}
+	if p.Recipients != nil {
+		allowed = make(map[string]struct{}, len(p.Recipients))
+		for _, id := range p.Recipients {
+			allowed[id] = struct{}{}
+		}
+	}
+	filtered := 0
+
 	b.mu.Lock()
 	deliver := make([]Subscriber, 0, len(b.topicSubs[topic]))
 	for sub := range b.topicSubs[topic] {
@@ -212,9 +252,17 @@ func (b *Bus) handleTopic(topic, payload string) {
 			buffered++
 			continue
 		}
+		if !allowedSubscriber(allowed, sub) {
+			filtered++
+			continue
+		}
 		deliver = append(deliver, sub)
 	}
 	b.mu.Unlock()
+
+	if filtered > 0 {
+		b.m.FanoutFiltered.Add(float64(filtered))
+	}
 
 	b.m.FanoutSubscribers.Observe(float64(len(deliver)))
 	b.m.FanoutBuffered.Add(float64(buffered))
@@ -234,6 +282,22 @@ func (b *Bus) handleTopic(topic, payload string) {
 
 type wireBroadcastPayload struct {
 	Data json.RawMessage `json:"data"`
+}
+
+// allowedSubscriber reports whether a subscriber is in the publish-time
+// allowlist. A subscriber that cannot be identified is always delivered
+// to: filtering one out silently would drop messages for every existing
+// Subscriber implementation the moment a Judge is configured.
+func allowedSubscriber(allowed map[string]struct{}, sub Subscriber) bool {
+	if allowed == nil {
+		return true
+	}
+	id, ok := sub.(Identified)
+	if !ok {
+		return true
+	}
+	_, in := allowed[id.SubscriberID()]
+	return in
 }
 
 func (b *Bus) handleBroadcast(userKey, payload string) {
@@ -256,6 +320,13 @@ func (b *Bus) PublishTopic(ctx context.Context, topic string, data json.RawMessa
 	if len(dataJSON) == 0 {
 		dataJSON = []byte("null")
 	}
+	// Judge before the message is written, so the stream carries the
+	// decision. A decision made after XAdd would be missing on replay.
+	recipients, err := b.judge(ctx, topic, data)
+	if err != nil {
+		return "", err
+	}
+
 	streamID, err := b.pub.XAdd(ctx, &redis.XAddArgs{
 		Stream: streamKey,
 		MaxLen: b.cfg.StreamMaxLength,
@@ -266,7 +337,7 @@ func (b *Bus) PublishTopic(ctx context.Context, topic string, data json.RawMessa
 		return "", fmt.Errorf("xadd: %w", err)
 	}
 
-	announce, _ := json.Marshal(wireTopicPayload{StreamID: streamID, Data: data})
+	announce, _ := json.Marshal(wireTopicPayload{StreamID: streamID, Data: data, Recipients: recipients})
 	if err := b.pub.Publish(ctx, topicChannelPrefix+topic, announce).Err(); err != nil {
 		return "", fmt.Errorf("publish topic: %w", err)
 	}
@@ -541,4 +612,68 @@ func splitStreamID(id string) (int64, int64) {
 	ms, _ := strconv.ParseInt(id[:i], 10, 64)
 	seq, _ := strconv.ParseInt(id[i+1:], 10, 64)
 	return ms, seq
+}
+
+// judge resolves the recipient allowlist for one publish.
+//
+// It returns nil when there is no Judge, when it fails under a DeliverAll
+// policy, or when the topic has no candidates at all — all of which mean
+// "route by exact-topic match", which is what nil Recipients encodes on
+// the wire. An empty non-nil slice is different and meaningful: the Judge
+// considered the candidates and chose none.
+func (b *Bus) judge(ctx context.Context, topic string, data json.RawMessage) ([]string, error) {
+	if b.cfg.Judge == nil || b.cfg.Candidates == nil {
+		return nil, nil
+	}
+
+	timeout := b.cfg.JudgeTimeout
+	if timeout <= 0 {
+		timeout = DefaultJudgeTimeout
+	}
+	jctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	start := time.Now()
+	recipients, err := b.judgeOnce(jctx, topic, data)
+	b.m.JudgeDuration.Observe(time.Since(start).Seconds())
+
+	if err == nil {
+		b.m.JudgeDecisions.WithLabelValues("ok").Inc()
+		return recipients, nil
+	}
+
+	outcome := "error"
+	if errors.Is(err, context.DeadlineExceeded) {
+		outcome = "timeout"
+	}
+	b.m.JudgeDecisions.WithLabelValues(outcome).Inc()
+	b.log.Error("judge failed; applying failure policy",
+		"topic", topic, "policy", b.cfg.JudgeFailurePolicy.String(), "err", err.Error())
+
+	if b.cfg.JudgeFailurePolicy == DeliverNone {
+		// A non-nil empty slice: considered, nobody selected. Distinct
+		// from nil, which would mean "deliver to everyone".
+		return []string{}, nil
+	}
+	return nil, nil
+}
+
+func (b *Bus) judgeOnce(ctx context.Context, topic string, data json.RawMessage) ([]string, error) {
+	candidates, err := b.cfg.Candidates.Candidates(ctx, topic)
+	if err != nil {
+		return nil, fmt.Errorf("candidates for %q: %w", topic, err)
+	}
+	if len(candidates) == 0 {
+		// Nothing to decide over. Returning nil rather than an empty slice
+		// keeps the payload identical to an unjudged publish, so a topic
+		// whose subscribers have not registered criteria is not silently
+		// starved.
+		return nil, nil
+	}
+
+	decisions, err := b.cfg.Judge.Judge(ctx, Message{Topic: topic, Data: data}, candidates)
+	if err != nil {
+		return nil, fmt.Errorf("judge %q: %w", topic, err)
+	}
+	return resolve(candidates, decisions)
 }

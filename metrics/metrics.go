@@ -67,6 +67,9 @@ type Metrics struct {
 	FanoutSubscribers  prometheus.Histogram
 	FanoutDuration     prometheus.Histogram
 	FanoutBuffered     prometheus.Counter
+	FanoutFiltered     prometheus.Counter
+	JudgeDuration      prometheus.Histogram
+	JudgeDecisions     *prometheus.CounterVec // outcome
 	LocalSubscriptions prometheus.Gauge
 
 	ReplayMessages  prometheus.Counter
@@ -121,6 +124,16 @@ func New() *Metrics {
 			prometheus.ExponentialBuckets(0.00001, 4, 9)),
 		FanoutBuffered: f.counter("bus_fanout_buffered_total",
 			"Messages buffered because a subscriber was mid-replay."),
+		FanoutFiltered: f.counter("bus_fanout_filtered_total",
+			"Local subscribers skipped because a Judge excluded them."),
+
+		JudgeDuration: f.histogram("bus_judge_duration_seconds",
+			"Time spent in one Judge call on the publish path.",
+			prometheus.ExponentialBuckets(0.001, 4, 9)),
+		// "error" and "timeout" are separate from "ok" so a failing Judge
+		// is visible even though the failure policy keeps messages flowing.
+		JudgeDecisions: f.counterVec("bus_judge_calls_total",
+			"Judge calls by outcome.", "outcome"),
 		LocalSubscriptions: f.gauge("bus_local_subscriptions",
 			"Topic subscriptions held by this instance."),
 

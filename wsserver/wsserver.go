@@ -82,6 +82,25 @@ type Options struct {
 	// authenticated client, which is only appropriate for a single tenant.
 	Authorizer authz.Authorizer
 
+	// Judge replaces exact-topic fan-out with a per-message routing
+	// decision, made once at publish time and carried with the message so
+	// every instance and every replay agrees. Nil keeps exact-topic match.
+	// It needs Candidates to have anything to decide over.
+	Judge bus.Judge
+
+	// Candidates supplies the cluster-wide subscriber set a Judge decides
+	// over. Nil disables judging.
+	Candidates bus.CandidateSource
+
+	// JudgeTimeout bounds one Judge call. Zero uses
+	// bus.DefaultJudgeTimeout. A Judge sits on the publish path, so an
+	// unbounded one stalls the publishing client.
+	JudgeTimeout time.Duration
+
+	// JudgeFailurePolicy decides what happens when a Judge fails. The zero
+	// value, bus.DeliverAll, falls back to exact-topic match.
+	JudgeFailurePolicy bus.FailurePolicy
+
 	// Metrics is the collector set. Nil creates a private one, reachable
 	// afterwards through Server.Metrics.
 	Metrics *metrics.Metrics
@@ -214,9 +233,13 @@ func New(opts Options) (*Server, error) {
 		return nil, err
 	}
 	a, err := app.New(cfg, log, app.Ext{
-		Verifier:   opts.Verifier,
-		Authorizer: opts.Authorizer,
-		Metrics:    opts.Metrics,
+		Verifier:           opts.Verifier,
+		Authorizer:         opts.Authorizer,
+		Metrics:            opts.Metrics,
+		Judge:              opts.Judge,
+		Candidates:         opts.Candidates,
+		JudgeTimeout:       opts.JudgeTimeout,
+		JudgeFailurePolicy: opts.JudgeFailurePolicy,
 	})
 	if err != nil {
 		return nil, err

@@ -12,6 +12,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 
 	"github.com/damiensmith1/go-ws-server/metrics"
@@ -125,6 +126,7 @@ type outFrame struct {
 // goroutine produced the frame.
 type Conn struct {
 	ws        *websocket.Conn
+	id        string
 	userKey   string
 	log       *slog.Logger
 	sendCh    chan outFrame
@@ -165,6 +167,10 @@ type ConnConfig struct {
 	SendChanCapacity int
 	WriteWait        time.Duration
 
+	// ID is this connection's cluster-unique identifier, used by a
+	// bus.Judge to address it. Empty generates a UUID.
+	ID string
+
 	// MaxConsecutiveDrops evicts a connection after this many fan-out
 	// messages are dropped back to back. Zero disables eviction, which is
 	// the behaviour this server had before: drops were counted but a
@@ -199,6 +205,9 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 	if cfg.WriteWait <= 0 {
 		cfg.WriteWait = 10 * time.Second
 	}
+	if cfg.ID == "" {
+		cfg.ID = uuid.NewString()
+	}
 	if cfg.MaxBufferedBytes <= 0 {
 		cfg.MaxBufferedBytes = 1024 * 1024
 	}
@@ -211,6 +220,7 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 	cfg.Metrics.ConnectionsActive.Inc()
 	return &Conn{
 		m:         cfg.Metrics,
+		id:        cfg.ID,
 		openedAt:  time.Now(),
 		maxDrops:  int64(cfg.MaxConsecutiveDrops),
 		expiresAt: cfg.ExpiresAt,
@@ -245,6 +255,14 @@ func (c *Conn) WaitDrained(ctx context.Context) bool {
 		return false
 	}
 }
+
+// SubscriberID returns this connection's cluster-unique identifier,
+// satisfying bus.Identified so a bus.Judge can address it individually.
+//
+// It is per-connection, not per-userKey: one user may hold several
+// sockets with different interests, and routing has to be able to tell
+// them apart.
+func (c *Conn) SubscriberID() string { return c.id }
 
 // Claims returns the credential claims this connection was authorized
 // with, or nil. The map is shared, not copied: callers must treat it as

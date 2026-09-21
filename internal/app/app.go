@@ -143,6 +143,11 @@ type Ext struct {
 	Verifier   auth.Verifier
 	Authorizer authz.Authorizer
 	Metrics    *metrics.Metrics
+
+	Judge              bus.Judge
+	Candidates         bus.CandidateSource
+	JudgeTimeout       time.Duration
+	JudgeFailurePolicy bus.FailurePolicy
 }
 
 func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
@@ -204,9 +209,13 @@ func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 	hub := connection.NewHub(log)
 
 	busInst := bus.New(pub, sub, hub, bus.Config{
-		StreamMaxLength: cfg.StreamMaxLength,
-		StreamTTL:       cfg.StreamTTL,
-		Metrics:         m,
+		StreamMaxLength:    cfg.StreamMaxLength,
+		StreamTTL:          cfg.StreamTTL,
+		Judge:              ext.Judge,
+		Candidates:         ext.Candidates,
+		JudgeTimeout:       ext.JudgeTimeout,
+		JudgeFailurePolicy: ext.JudgeFailurePolicy,
+		Metrics:            m,
 	}, log)
 
 	guard := &ssrf.Guard{AllowedHosts: cfg.SchedulerAllowedHosts}

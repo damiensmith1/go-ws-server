@@ -82,6 +82,50 @@ the command uses. `srv.Bus()` publishes from inside the host process
 without a websocket round trip, and `srv.Metrics().Registry()` exposes the
 collectors on your own HTTP server instead of a second listener.
 
+### Custom routing: the `Judge` hook
+
+By default a topic's subscribers all receive every message published to
+it. A `bus.Judge` replaces that with a per-message decision — semantic
+matching, per-recipient filtering, sampling, anything that has to look at
+the payload:
+
+```go
+type Judge interface {
+    Judge(ctx context.Context, msg bus.Message, candidates []bus.Candidate) ([]bus.Decision, error)
+}
+```
+
+Two properties of the interface are deliberate.
+
+**It is called once, at publish**, inside `PublishTopic`, and the
+resulting recipient list is written into the message. Judging during
+fan-out instead would break three things: every instance receives every
+publish, so a non-deterministic judge would deliver to a subscriber on one
+instance and not another; replay reads from a Redis stream, so a decision
+not stored there is lost on reconnect; and fan-out is at-least-once, so a
+recomputed decision can differ between delivery attempts for the same
+message. Deciding once and carrying the result fixes all three.
+
+**It receives every candidate at once**, not one call per subscriber.
+That is the shape a remote classifier wants — one request carrying the
+message and all the predicates. Measured against a real classifier, going
+from 1 to 100 candidates in a single call left latency flat (193ms to
+224ms) while per-subscriber calls would have been 100 sequential round
+trips.
+
+A failing Judge does not drop the message. `JudgeFailurePolicy` defaults
+to `bus.DeliverAll`, falling back to exact-topic match, because a broker
+that silently stops delivering when its classifier is unavailable is a
+worse failure than one that briefly over-delivers. Use `bus.DeliverNone`
+only when over-delivery is the more serious fault. Either way the failure
+is counted under `bus_judge_calls_total{outcome}`.
+
+Supply `Candidates` alongside it — a `bus.CandidateSource` returning the
+**cluster-wide** subscribers for a topic, since the decision is recorded
+for every instance, not just the publishing one. Subscribers are addressed
+by `bus.Identified`; a `Subscriber` that does not implement it is never
+filtered, so existing implementations keep working unchanged.
+
 ### Public packages
 
 | Package | For |
