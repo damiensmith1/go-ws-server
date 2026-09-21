@@ -34,6 +34,10 @@ type Config struct {
 	MaxPayloadBytes  int64
 	MaxBufferedBytes int64
 
+	// MaxConsecutiveDrops evicts a connection after this many fan-out
+	// messages are dropped back to back. Zero disables eviction.
+	MaxConsecutiveDrops int
+
 	// AllowedOrigins is the Origin allowlist for websocket upgrades. Empty
 	// keeps gorilla's same-origin default.
 	AllowedOrigins []string
@@ -134,6 +138,9 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	if cfg.MaxBufferedBytes, err = getint64Or("MAX_BUFFERED_BYTES", 1024*1024); err != nil {
+		return nil, err
+	}
+	if cfg.MaxConsecutiveDrops, err = getintOr("MAX_CONSECUTIVE_DROPS", 100); err != nil {
 		return nil, err
 	}
 	if cfg.StreamMaxLength, err = getint64Or("STREAM_MAX_LENGTH", 1000); err != nil {

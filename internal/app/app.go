@@ -417,13 +417,14 @@ func serveWS(
 	keepAlive := r.URL.Query().Get("keepAlive") == "true"
 
 	conn := connection.NewConn(ws, connection.ConnConfig{
-		UserKey:          res.UserKey,
-		MaxBufferedBytes: cfg.MaxBufferedBytes,
-		SendChanCapacity: 128,
-		WriteWait:        10 * time.Second,
-		ExpiresAt:        res.ExpiresAt,
-		Claims:           res.Claims,
-		Metrics:          deps.Metrics,
+		UserKey:             res.UserKey,
+		MaxBufferedBytes:    cfg.MaxBufferedBytes,
+		MaxConsecutiveDrops: cfg.MaxConsecutiveDrops,
+		SendChanCapacity:    128,
+		WriteWait:           10 * time.Second,
+		ExpiresAt:           res.ExpiresAt,
+		Claims:              res.Claims,
+		Metrics:             deps.Metrics,
 	}, log)
 
 	hub.Add(conn)

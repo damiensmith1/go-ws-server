@@ -39,6 +39,7 @@ const (
 	CloseServer       = "server"
 	CloseReadError    = "read_error"
 	CloseTokenExpired = "token_expired"
+	CloseSlowConsumer = "slow_consumer"
 )
 
 // Upgrade outcomes for ConnectionsTotal.

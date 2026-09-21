@@ -207,3 +207,91 @@ func TestWaitDrained(t *testing.T) {
 		}
 	})
 }
+
+func TestSlowConsumerEviction(t *testing.T) {
+	// A wedged peer must not keep its socket forever. The channel is size
+	// 1 and nothing consumes it, so every send after the first drops.
+	t.Run("evicts after the consecutive-drop budget", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{
+			SendChanCapacity:    1,
+			MaxBufferedBytes:    1 << 20,
+			MaxConsecutiveDrops: 3,
+		})
+		for i := 0; i < 10; i++ {
+			c.Send([]byte(`{"x":1}`))
+		}
+
+		select {
+		case <-c.closed:
+		default:
+			t.Fatal("slow consumer kept its connection past the drop budget")
+		}
+		if c.closeReason != metrics.CloseSlowConsumer {
+			t.Fatalf("closeReason = %q, want %q", c.closeReason, metrics.CloseSlowConsumer)
+		}
+	})
+
+	// The budget is consecutive, not cumulative: an otherwise healthy
+	// connection that drops the odd frame under a burst must survive, or
+	// every long-lived connection is eventually evicted.
+	t.Run("a successful send resets the run", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{
+			SendChanCapacity:    1,
+			MaxBufferedBytes:    1 << 20,
+			MaxConsecutiveDrops: 3,
+		})
+
+		for i := 0; i < 20; i++ {
+			c.Send([]byte(`{"x":1}`)) // first fills the channel, rest drop
+			<-c.sendCh                // peer catches up
+			if i%2 == 0 {
+				c.Send([]byte(`{"x":2}`)) // succeeds, resetting the run
+				<-c.sendCh
+			}
+		}
+
+		select {
+		case <-c.closed:
+			t.Fatal("a connection that keeps up between drops was evicted")
+		default:
+		}
+	})
+
+	t.Run("zero budget disables eviction", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{SendChanCapacity: 1, MaxBufferedBytes: 1 << 20})
+		for i := 0; i < 500; i++ {
+			c.Send([]byte(`{"x":1}`))
+		}
+
+		select {
+		case <-c.closed:
+			t.Fatal("eviction fired although MaxConsecutiveDrops was 0")
+		default:
+		}
+		if got := testutil.ToFloat64(m.FramesDropped.WithLabelValues(metrics.DropChannelFull)); got == 0 {
+			t.Fatal("drops should still be counted when eviction is disabled")
+		}
+	})
+
+	// Oversized messages hit a different branch; it must feed the same
+	// budget, or a client wedged that way is never evicted.
+	t.Run("buffer-threshold drops also count toward the budget", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{
+			SendChanCapacity:    8,
+			MaxBufferedBytes:    4,
+			MaxConsecutiveDrops: 2,
+		})
+		c.Send([]byte("this is larger than the buffer"))
+		c.Send([]byte("this is larger than the buffer"))
+
+		select {
+		case <-c.closed:
+		default:
+			t.Fatal("repeated buffer-threshold drops did not evict")
+		}
+	})
+}

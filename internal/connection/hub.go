@@ -132,6 +132,11 @@ type Conn struct {
 	maxBuf    int64
 	writeWait time.Duration
 
+	// maxDrops is the consecutive-drop budget before eviction; 0 disables
+	// eviction. consecDrops is reset by any successful send.
+	maxDrops    int64
+	consecDrops atomic.Int64
+
 	// idleReset is signaled whenever the reader sees inbound traffic; the
 	// idle-timeout watcher consumes it.
 	idleReset chan struct{}
@@ -159,6 +164,18 @@ type ConnConfig struct {
 	MaxBufferedBytes int64
 	SendChanCapacity int
 	WriteWait        time.Duration
+
+	// MaxConsecutiveDrops evicts a connection after this many fan-out
+	// messages are dropped back to back. Zero disables eviction, which is
+	// the behaviour this server had before: drops were counted but a
+	// wedged client kept its socket and kept losing messages forever.
+	//
+	// Consecutive rather than cumulative on purpose. Every long-lived
+	// connection will drop the occasional frame under a burst, and a
+	// cumulative budget would eventually evict all of them. Only a run of
+	// drops with no successful send in between means the peer has stopped
+	// reading.
+	MaxConsecutiveDrops int
 
 	// ExpiresAt is the credential deadline from auth.Result. Zero means the
 	// credential does not expire and no deadline watcher is started.
@@ -195,6 +212,7 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 	return &Conn{
 		m:         cfg.Metrics,
 		openedAt:  time.Now(),
+		maxDrops:  int64(cfg.MaxConsecutiveDrops),
 		expiresAt: cfg.ExpiresAt,
 		claims:    cfg.Claims,
 		ws:        ws,
@@ -244,23 +262,49 @@ func (c *Conn) Send(msg []byte) {
 	}
 	n := int64(len(msg))
 	if c.bufBytes.Load()+n > c.maxBuf {
-		c.m.FramesDropped.WithLabelValues(metrics.DropBufferThreshold).Inc()
 		c.log.Warn("dropping message: socket buffer above threshold",
 			"bufferedAmount", c.bufBytes.Load(),
 			"messageBytes", n,
 		)
+		c.recordDrop(metrics.DropBufferThreshold)
 		return
 	}
 	select {
 	case c.sendCh <- outFrame{kind: frameText, payload: msg}:
 		c.bufBytes.Add(n)
 		c.m.FramesSent.Inc()
+		c.consecDrops.Store(0)
 	case <-c.closed:
 		return
 	default:
-		c.m.FramesDropped.WithLabelValues(metrics.DropChannelFull).Inc()
 		c.log.Warn("dropping message: send chan full")
+		c.recordDrop(metrics.DropChannelFull)
 	}
+}
+
+// recordDrop counts a dropped fan-out message and evicts the connection
+// once it has dropped MaxConsecutiveDrops in a row.
+//
+// Dropping rather than blocking is what keeps one stalled client from
+// backing up the whole bus, but on its own it has no end state: a peer
+// that has stopped reading holds its socket, its Redis subscription entry
+// and its share of every fan-out for as long as it stays connected, while
+// silently receiving nothing. Eviction gives that a bound and makes the
+// failure visible to the client, which can reconnect and replay.
+func (c *Conn) recordDrop(reason string) {
+	c.m.FramesDropped.WithLabelValues(reason).Inc()
+	if c.maxDrops <= 0 {
+		return
+	}
+	if c.consecDrops.Add(1) < c.maxDrops {
+		return
+	}
+	c.log.Warn("evicting slow consumer",
+		"userKey", c.userKey, "consecutiveDrops", c.maxDrops, "reason", reason)
+	// 1013 Try Again Later: the client is not at fault in a way it can
+	// fix by changing its request, and it should reconnect — with `since`
+	// to replay what it missed.
+	c.closeWith(websocket.CloseTryAgainLater, "slow consumer", metrics.CloseSlowConsumer)
 }
 
 // SendNow is a blocking variant used for reply frames (success/error
