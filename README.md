@@ -601,6 +601,13 @@ deliveries with no loss at p50 2.5ms** (500 subscribers, 200 publishes/s),
 and **1,000,000 deliveries with no loss** under an unthrottled burst,
 where the cost shows up as latency (p50 2.75s) rather than drops.
 
+`cmd/wsfanout` measures what multiple instances cost each other. Every
+instance receives every message for every topic, so the cost is
+O(instances x *all* messages). Measured: server CPU is negligible
+(190-350ns per discarded message), but **Redis egress is
+`message size x instance count` per publish** — with 1 KB messages, ten
+instances at ~10,800 messages/second saturate a 1 Gbps link.
+
 Full method, numbers and caveats: [docs/load-testing.md](docs/load-testing.md).
 
 ## Scaling
