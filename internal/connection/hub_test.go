@@ -168,3 +168,42 @@ func TestExpiryWatcher(t *testing.T) {
 		}
 	})
 }
+
+func TestWaitDrained(t *testing.T) {
+	t.Run("reports failure when the writer never runs", func(t *testing.T) {
+		c := newTestConn(t, metrics.New(), ConnConfig{SendChanCapacity: 4, MaxBufferedBytes: 1 << 20})
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		if c.WaitDrained(ctx) {
+			t.Fatal("reported drained although no writer ever consumed the queue")
+		}
+	})
+
+	t.Run("reports success once the writer returns", func(t *testing.T) {
+		c := newTestConn(t, metrics.New(), ConnConfig{SendChanCapacity: 4, MaxBufferedBytes: 1 << 20})
+		close(c.drained) // stand in for runWriter returning
+
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if !c.WaitDrained(ctx) {
+			t.Fatal("drained connection reported as stuck")
+		}
+	})
+
+	// Shutdown must be able to say how much it failed to flush rather than
+	// claim a clean stop it did not achieve.
+	t.Run("hub counts the connections that did not drain", func(t *testing.T) {
+		h := NewHub(quietLogger())
+		drained := newTestConn(t, metrics.New(), ConnConfig{SendChanCapacity: 4, MaxBufferedBytes: 1 << 20})
+		close(drained.drained)
+		stuck := newTestConn(t, metrics.New(), ConnConfig{SendChanCapacity: 4, MaxBufferedBytes: 1 << 20})
+
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+		defer cancel()
+
+		if got := h.WaitDrained(ctx, []*Conn{drained, stuck}); got != 1 {
+			t.Fatalf("stuck count = %d, want 1", got)
+		}
+	})
+}

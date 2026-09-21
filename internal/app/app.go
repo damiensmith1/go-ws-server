@@ -345,7 +345,11 @@ func (a *App) Run(ctx context.Context) error {
 }
 
 func (a *App) shutdown() {
-	shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	timeout := a.cfg.ShutdownTimeout
+	if timeout <= 0 {
+		timeout = config.DefaultShutdownTimeout
+	}
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
 	if err := a.server.Shutdown(shutdownCtx); err != nil {
@@ -356,9 +360,20 @@ func (a *App) shutdown() {
 			a.log.Warn("metrics shutdown error", "err", err.Error())
 		}
 	}
-	for _, c := range a.hub.Snapshot() {
+	// Close queues a close frame behind whatever is already in each send
+	// queue, so the writer drains the backlog before it sends the close.
+	// Without the wait that follows, the process exits mid-drain and every
+	// queued frame is lost — messages the server had already accepted and
+	// acknowledged to their publisher.
+	conns := a.hub.Snapshot()
+	for _, c := range conns {
 		c.Close(websocket.CloseGoingAway, "server shutting down")
 	}
+	if stuck := a.hub.WaitDrained(shutdownCtx, conns); stuck > 0 {
+		a.log.Warn("shutdown timed out with connections still draining",
+			"stuck", stuck, "total", len(conns), "timeout", timeout.String())
+	}
+
 	if err := a.bus.Close(); err != nil {
 		a.log.Warn("bus close error", "err", err.Error())
 	}

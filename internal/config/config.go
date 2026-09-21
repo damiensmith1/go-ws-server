@@ -68,6 +68,12 @@ type Config struct {
 	// as "not ready" rather than as a hung probe.
 	ReadinessTimeout time.Duration
 
+	// ShutdownTimeout bounds graceful shutdown: draining in-flight HTTP
+	// requests and flushing queued websocket frames. It should sit below
+	// the orchestrator's termination grace period, or the process is
+	// killed mid-drain and the bound never applies.
+	ShutdownTimeout time.Duration
+
 	LogLevel   string
 	InstanceID string
 }
@@ -75,6 +81,10 @@ type Config struct {
 // DefaultReadinessTimeout is used when READINESS_TIMEOUT_MS is unset or
 // non-positive.
 const DefaultReadinessTimeout = 2 * time.Second
+
+// DefaultShutdownTimeout is used when SHUTDOWN_TIMEOUT_MS is unset or
+// non-positive. It matches the value that was previously hardcoded.
+const DefaultShutdownTimeout = 10 * time.Second
 
 // Load reads configuration from the environment, applying defaults that
 // match the TypeScript reference implementation. Returns an error only on
@@ -143,6 +153,15 @@ func Load() (*Config, error) {
 		readyMs = int64(DefaultReadinessTimeout / time.Millisecond)
 	}
 	cfg.ReadinessTimeout = time.Duration(readyMs) * time.Millisecond
+
+	shutdownMs, err := getint64Or("SHUTDOWN_TIMEOUT_MS", int64(DefaultShutdownTimeout/time.Millisecond))
+	if err != nil {
+		return nil, err
+	}
+	if shutdownMs <= 0 {
+		shutdownMs = int64(DefaultShutdownTimeout / time.Millisecond)
+	}
+	cfg.ShutdownTimeout = time.Duration(shutdownMs) * time.Millisecond
 
 	if cfg.RateLimitMessagesPerSec, err = getintOr("RATE_LIMIT_MESSAGES_PER_SEC", 50); err != nil {
 		return nil, err

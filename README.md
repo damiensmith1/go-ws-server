@@ -61,6 +61,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `METRICS_ADDR`                 | —       | Listen address for Prometheus `/metrics`, e.g. `:9090`. Empty disables it. |
 | `READINESS_TIMEOUT_MS`         | `2000`  | Timeout for the Redis ping behind `/readyz`.                      |
 | `AUTHZ_RULES`                  | —       | Per-topic authorization policy as JSON. Empty allows every topic to every authenticated client. |
+| `SHUTDOWN_TIMEOUT_MS`          | `10000` | Bound on graceful shutdown, including flushing queued frames.     |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
 | `MAX_BUFFERED_BYTES`           | `1048576` | Per-socket outbound buffer threshold; messages drop above this. |

@@ -73,6 +73,26 @@ func (h *Hub) SendToUser(userKey string, msg []byte) {
 
 // Snapshot returns a slice of every active connection, useful for graceful
 // shutdown.
+// WaitDrained waits for every connection in the hub to flush its send
+// queue, or for ctx to expire. It returns the number that did not drain
+// in time, so the caller can report how much was dropped rather than
+// claiming a clean shutdown it did not achieve.
+func (h *Hub) WaitDrained(ctx context.Context, conns []*Conn) int {
+	var wg sync.WaitGroup
+	var stuck atomic.Int64
+	for _, c := range conns {
+		wg.Add(1)
+		go func(c *Conn) {
+			defer wg.Done()
+			if !c.WaitDrained(ctx) {
+				stuck.Add(1)
+			}
+		}(c)
+	}
+	wg.Wait()
+	return int(stuck.Load())
+}
+
 func (h *Hub) Snapshot() []*Conn {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -118,6 +138,12 @@ type Conn struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	// drained is closed by runWriter when it returns, i.e. once every
+	// frame queued ahead of the close frame has been written to the
+	// socket. Shutdown waits on it so a graceful stop does not discard
+	// messages the server already accepted.
+	drained chan struct{}
 
 	m           *metrics.Metrics
 	openedAt    time.Time
@@ -179,11 +205,28 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 		writeWait: cfg.WriteWait,
 		idleReset: make(chan struct{}, 1),
 		closed:    make(chan struct{}),
+		drained:   make(chan struct{}),
 	}
 }
 
 // UserKey returns the authenticated identity for this connection.
 func (c *Conn) UserKey() string { return c.userKey }
+
+// WaitDrained blocks until the writer goroutine has flushed everything
+// queued on this connection, or until ctx is done. It returns true if the
+// connection drained.
+//
+// A connection whose writer never started — every Conn in the unit tests,
+// and any Conn built with a nil socket — would block here forever, so a
+// caller must always bound this with a context.
+func (c *Conn) WaitDrained(ctx context.Context) bool {
+	select {
+	case <-c.drained:
+		return true
+	case <-ctx.Done():
+		return false
+	}
+}
 
 // Claims returns the credential claims this connection was authorized
 // with, or nil. The map is shared, not copied: callers must treat it as
@@ -291,6 +334,7 @@ func (c *Conn) resetIdle() {
 // writes. Mixing writes from multiple goroutines is a panic in gorilla.
 func (c *Conn) runWriter() {
 	defer c.ws.Close()
+	defer close(c.drained)
 	for frame := range c.sendCh {
 		_ = c.ws.SetWriteDeadline(time.Now().Add(c.writeWait))
 		switch frame.kind {
