@@ -12,6 +12,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -42,6 +43,40 @@ type App struct {
 	server   *http.Server
 	listener net.Listener
 	verifier auth.Verifier
+}
+
+// originChecker builds the upgrader's CheckOrigin. Returning nil leaves
+// gorilla's default in place: allow requests carrying no Origin header,
+// and otherwise require Origin to match Host.
+//
+// With an allowlist configured, a request with no Origin header is still
+// allowed — browsers always send one, so its absence means a non-browser
+// client such as a CLI or another service. Any Origin that is present
+// must appear in the list. A single "*" entry allows every origin and is
+// intended for local development only.
+func originChecker(allowed []string, log *slog.Logger) func(*http.Request) bool {
+	if len(allowed) == 0 {
+		return nil
+	}
+	set := make(map[string]struct{}, len(allowed))
+	wildcard := false
+	for _, o := range allowed {
+		if o == "*" {
+			wildcard = true
+		}
+		set[strings.ToLower(o)] = struct{}{}
+	}
+	return func(r *http.Request) bool {
+		origin := r.Header.Get("Origin")
+		if origin == "" || wildcard {
+			return true
+		}
+		if _, ok := set[strings.ToLower(origin)]; ok {
+			return true
+		}
+		log.Warn("rejected websocket upgrade: origin not allowed", "origin", origin)
+		return false
+	}
 }
 
 func New(cfg *config.Config, log *slog.Logger) (*App, error) {
@@ -95,6 +130,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
+		CheckOrigin:     originChecker(cfg.AllowedOrigins, log),
 	}
 
 	mux := http.NewServeMux()

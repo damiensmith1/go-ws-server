@@ -29,10 +29,14 @@ type Config struct {
 	RedisAddrs      []string
 	RedisMasterName string
 
-	WebSocketPort     int
-	WebSocketTimeout  time.Duration
-	MaxPayloadBytes   int64
-	MaxBufferedBytes  int64
+	WebSocketPort    int
+	WebSocketTimeout time.Duration
+	MaxPayloadBytes  int64
+	MaxBufferedBytes int64
+
+	// AllowedOrigins is the Origin allowlist for websocket upgrades. Empty
+	// keeps gorilla's same-origin default.
+	AllowedOrigins []string
 
 	TLSKeyPath  string
 	TLSCertPath string
@@ -67,6 +71,8 @@ func Load() (*Config, error) {
 
 		RedisAddrs:      getcsv("REDIS_ADDRS"),
 		RedisMasterName: os.Getenv("REDIS_MASTER_NAME"),
+
+		AllowedOrigins: getcsv("ALLOWED_ORIGINS"),
 
 		AuthJWTSecret:   os.Getenv("AUTH_JWT_SECRET"),
 		AuthJWTAudience: os.Getenv("AUTH_JWT_AUDIENCE"),

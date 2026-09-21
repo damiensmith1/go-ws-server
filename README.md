@@ -56,6 +56,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `REDIS_MASTER_NAME`            | —       | Set with `REDIS_ADDRS` to use Sentinel failover.                  |
 | `REDIS_PASSWORD`               | —       | Redis auth.                                                       |
 | `WEBSOCKET_PORT`               | `8080`  | Listen port.                                                      |
+| `ALLOWED_ORIGINS`              | —       | Comma-separated `Origin` allowlist for upgrades. Empty keeps the same-origin default; `*` allows all (dev only). |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
 | `MAX_BUFFERED_BYTES`           | `1048576` | Per-socket outbound buffer threshold; messages drop above this. |
