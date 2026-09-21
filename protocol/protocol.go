@@ -24,6 +24,12 @@ const (
 	TypeScheduleJob = "scheduleJob"
 	TypeRemoveJob   = "removeJob"
 	TypeBroadcast   = "broadcast"
+
+	// TypePresence asks who is subscribed to a topic; TypeListSubs asks
+	// which topics this client is subscribed to. Both read cluster state
+	// that the server already maintained but never exposed.
+	TypePresence = "presence"
+	TypeListSubs = "listSubscriptions"
 )
 
 // Lock kinds.
@@ -39,6 +45,8 @@ const (
 	OutPublishDelivery = "publish"
 	OutReplayTruncated = "replayTruncated"
 	OutBroadcastMsg    = "message"
+	OutPresence        = "presence"
+	OutSubscriptions   = "subscriptions"
 )
 
 // Envelope is the union shape every inbound JSON message conforms to.
@@ -139,6 +147,12 @@ func Validate(env *Envelope) error {
 		if env.Topic == "" || (env.LockType != LockPublish && env.LockType != LockSubscribe) {
 			return fmt.Errorf("Message of type %q must contain topic and a valid lockType.", env.Type)
 		}
+	case TypePresence:
+		if env.Topic == "" {
+			return fmt.Errorf("Message of type %q must contain topic.", env.Type)
+		}
+	case TypeListSubs:
+		// No fields: a client can only ask about its own subscriptions.
 	case TypeSubscribe, TypeUnsubscribe:
 		if env.Topic == "" {
 			return fmt.Errorf("Message of type %q must contain topic.", env.Type)
@@ -289,6 +303,48 @@ func EncodeReplayTruncated(topic, oldestAvailable string) []byte {
 type broadcastFrame struct {
 	Type string          `json:"type"`
 	Data json.RawMessage `json:"data"`
+}
+
+type presenceFrame struct {
+	Type        string   `json:"type"`
+	ReqID       string   `json:"reqID,omitempty"`
+	Topic       string   `json:"topic"`
+	Subscribers []string `json:"subscribers"`
+	Count       int      `json:"count"`
+}
+
+// EncodePresence reports who is subscribed to a topic.
+func EncodePresence(reqID, topic string, subscribers []string) []byte {
+	if subscribers == nil {
+		subscribers = []string{}
+	}
+	b, _ := json.Marshal(presenceFrame{
+		Type:        OutPresence,
+		ReqID:       reqID,
+		Topic:       topic,
+		Subscribers: subscribers,
+		Count:       len(subscribers),
+	})
+	return b
+}
+
+type subscriptionsFrame struct {
+	Type   string   `json:"type"`
+	ReqID  string   `json:"reqID,omitempty"`
+	Topics []string `json:"topics"`
+}
+
+// EncodeSubscriptions reports the topics a client is subscribed to.
+func EncodeSubscriptions(reqID string, topics []string) []byte {
+	if topics == nil {
+		topics = []string{}
+	}
+	b, _ := json.Marshal(subscriptionsFrame{
+		Type:   OutSubscriptions,
+		ReqID:  reqID,
+		Topics: topics,
+	})
+	return b
 }
 
 func EncodeBroadcast(data json.RawMessage) []byte {

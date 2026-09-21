@@ -68,6 +68,8 @@ var knownFrameTypes = map[string]struct{}{
 	protocol.TypeScheduleJob: {},
 	protocol.TypeRemoveJob:   {},
 	protocol.TypeBroadcast:   {},
+	protocol.TypePresence:    {},
+	protocol.TypeListSubs:    {},
 }
 
 func frameTypeLabel(t string) string {
@@ -181,6 +183,10 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 		responseMsg, handlerErr = handleScheduleJob(ctx, c, &env, d)
 	case protocol.TypeRemoveJob:
 		responseMsg, handlerErr = handleRemoveJob(ctx, c, &env, d)
+	case protocol.TypePresence:
+		_, handlerErr = handlePresence(ctx, c, &env, d)
+	case protocol.TypeListSubs:
+		_, handlerErr = handleListSubscriptions(ctx, c, &env, d)
 	case protocol.TypeBroadcast:
 		// Broadcasts are fire-and-forget — the sender doesn't get a reply.
 		_, handlerErr = handleBroadcast(ctx, c, &env, d)
@@ -321,6 +327,34 @@ func handleRemoveJob(ctx context.Context, c *Conn, env *protocol.Envelope, d Dep
 		return "", err
 	}
 	return fmt.Sprintf("Successfully removed job %s", env.JobID), nil
+}
+
+// handlePresence reports who is subscribed to a topic.
+//
+// Gated as a read of the topic: the membership list is as sensitive as
+// the messages, so anyone who may not subscribe may not enumerate the
+// subscribers either.
+func handlePresence(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if err := authorize(ctx, c, authz.ActionSubscribe, env.Topic, d); err != nil {
+		return "", err
+	}
+	subs, err := redisx.TopicSubscribers(ctx, d.RDB, env.Topic)
+	if err != nil {
+		return "", err
+	}
+	c.SendNow(ctx, protocol.EncodePresence(env.ReqID, env.Topic, subs))
+	return "", nil
+}
+
+// handleListSubscriptions reports the topics this client is subscribed
+// to. Ungated: it reveals only what the caller already did.
+func handleListSubscriptions(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	topics, err := redisx.SubscribedTopics(ctx, d.RDB, c.UserKey())
+	if err != nil {
+		return "", err
+	}
+	c.SendNow(ctx, protocol.EncodeSubscriptions(env.ReqID, topics))
+	return "", nil
 }
 
 func handleBroadcast(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {

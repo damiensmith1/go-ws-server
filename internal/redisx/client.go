@@ -102,6 +102,15 @@ func RemoveTopicSubscription(ctx context.Context, c redis.UniversalClient, userK
 	return nil
 }
 
+// TopicSubscribers returns every userKey currently subscribed to a topic,
+// across all instances. The set is maintained by AddTopicSubscription and
+// RemoveTopicSubscription; nothing read it until presence existed.
+func TopicSubscribers(ctx context.Context, c redis.UniversalClient, topic string) ([]string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+	return c.SMembers(ctx, "topic:"+topic).Result()
+}
+
 // SubscribedTopics returns every topic the given userKey is subscribed to.
 func SubscribedTopics(ctx context.Context, c redis.UniversalClient, userKey string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)

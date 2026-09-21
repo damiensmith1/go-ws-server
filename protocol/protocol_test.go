@@ -98,3 +98,69 @@ func TestSinceToString(t *testing.T) {
 		}
 	}
 }
+
+func TestEncodePresence(t *testing.T) {
+	// A topic with no subscribers must encode as [], not null: a client
+	// decoding into a list should not have to special-case nil.
+	t.Run("empty topic encodes as an empty list", func(t *testing.T) {
+		got := string(EncodePresence("r1", "chat", nil))
+		if strings.Contains(got, "null") {
+			t.Fatalf("got %s, want an empty JSON array", got)
+		}
+		if !strings.Contains(got, `"count":0`) {
+			t.Fatalf("got %s, want count 0", got)
+		}
+	})
+
+	t.Run("carries subscribers, count and reqID", func(t *testing.T) {
+		var frame struct {
+			Type        string   `json:"type"`
+			ReqID       string   `json:"reqID"`
+			Topic       string   `json:"topic"`
+			Subscribers []string `json:"subscribers"`
+			Count       int      `json:"count"`
+		}
+		if err := json.Unmarshal(EncodePresence("r1", "chat", []string{"alice", "bob"}), &frame); err != nil {
+			t.Fatalf("unmarshal: %v", err)
+		}
+		if frame.Type != OutPresence || frame.ReqID != "r1" || frame.Topic != "chat" {
+			t.Fatalf("frame = %+v", frame)
+		}
+		if frame.Count != 2 || len(frame.Subscribers) != 2 {
+			t.Fatalf("frame = %+v, want 2 subscribers", frame)
+		}
+	})
+}
+
+func TestEncodeSubscriptions(t *testing.T) {
+	got := string(EncodeSubscriptions("r2", nil))
+	if strings.Contains(got, "null") {
+		t.Fatalf("got %s, want an empty JSON array", got)
+	}
+
+	var frame struct {
+		Type   string   `json:"type"`
+		ReqID  string   `json:"reqID"`
+		Topics []string `json:"topics"`
+	}
+	if err := json.Unmarshal(EncodeSubscriptions("r2", []string{"a", "b"}), &frame); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if frame.Type != OutSubscriptions || frame.ReqID != "r2" || len(frame.Topics) != 2 {
+		t.Fatalf("frame = %+v", frame)
+	}
+}
+
+func TestValidateNewVerbs(t *testing.T) {
+	if err := Validate(&Envelope{Type: TypePresence}); err == nil {
+		t.Fatal("presence without a topic was accepted")
+	}
+	if err := Validate(&Envelope{Type: TypePresence, Topic: "chat"}); err != nil {
+		t.Fatalf("valid presence rejected: %v", err)
+	}
+	// listSubscriptions takes no fields: a client can only ask about its
+	// own subscriptions, so there is nothing to name.
+	if err := Validate(&Envelope{Type: TypeListSubs}); err != nil {
+		t.Fatalf("listSubscriptions rejected: %v", err)
+	}
+}

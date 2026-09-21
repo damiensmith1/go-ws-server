@@ -358,6 +358,38 @@ Subscribers (across all instances) receive:
 
 `lockType` is `"publish"` or `"subscribe"`. Locks have a 5-minute TTL; renew before they expire.
 
+### Presence
+
+Ask who is subscribed to a topic. Gated as a read of that topic: the
+membership list is as sensitive as the messages, so a client that may not
+subscribe may not enumerate subscribers either.
+
+```json
+{ "type": "presence", "topic": "chat", "reqID": "r1" }
+```
+
+```json
+{ "type": "presence", "reqID": "r1", "topic": "chat",
+  "subscribers": ["alice", "bob"], "count": 2 }
+```
+
+Subscribers are userKeys, deduplicated across sockets — a user with three
+connections to the topic appears once.
+
+### List subscriptions
+
+Ask which topics this client is subscribed to. Ungated: it reveals only
+what the caller already did. Useful after a reconnect to reconcile
+client-side state against the server's.
+
+```json
+{ "type": "listSubscriptions", "reqID": "r2" }
+```
+
+```json
+{ "type": "subscriptions", "reqID": "r2", "topics": ["chat", "alerts"] }
+```
+
 ### Broadcast
 
 ```json
