@@ -490,6 +490,13 @@ The server is stateless. Run as many instances as you like behind any TCP/HTTP l
 - Late subscribers `XRANGE` from their `since` cursor; the server dedupes the brief window where stream and pub/sub overlap.
 - Scheduled jobs are claimed atomically (`SET NX EX`), so any instance can run any job exactly once.
 
+### Dashboard
+
+An importable Grafana dashboard covering every exported metric lives at
+[`deploy/grafana/go-ws-server.json`](deploy/grafana/go-ws-server.json),
+with scrape config and panel notes in
+[`deploy/grafana/README.md`](deploy/grafana/README.md).
+
 ## Log correlation
 
 Every log line written while serving a connection carries `connID` and
