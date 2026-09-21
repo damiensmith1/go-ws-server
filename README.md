@@ -113,6 +113,23 @@ If `AUTH_JWT_SECRET` is **not** set, the server logs a loud warning at startup a
 
 To plug in a custom auth scheme (mTLS, opaque session tokens, header validation, etc.) implement the `auth.Verifier` interface and pass it into the server in `main.go`.
 
+### Token expiry
+
+`exp` is enforced for the life of the socket, not just at the handshake.
+Verification runs once, at upgrade; without further action a token that
+expires — or is revoked — keeps its connection until the idle timeout,
+and indefinitely if the client keeps pinging.
+
+When the verifier reports a deadline, the server closes the socket at
+that moment with close code **1008 (policy violation)** and reason
+`token expired`, which a client can tell apart from an idle close or a
+restart and use as its cue to re-authenticate and reconnect. A token
+with no `exp` claim gets no deadline. Closes are counted under
+`ws_connections_closed_total{reason="token_expired"}`.
+
+A custom `auth.Verifier` opts in by setting `Result.ExpiresAt`; leaving
+it zero preserves the previous behaviour.
+
 ## Connecting
 
 ```

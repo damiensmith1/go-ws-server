@@ -34,10 +34,11 @@ const (
 
 // Connection close reasons for ConnectionsClosed.
 const (
-	CloseIdleTimeout = "idle_timeout"
-	ClosePeer        = "peer"
-	CloseServer      = "server"
-	CloseReadError   = "read_error"
+	CloseIdleTimeout  = "idle_timeout"
+	ClosePeer         = "peer"
+	CloseServer       = "server"
+	CloseReadError    = "read_error"
+	CloseTokenExpired = "token_expired"
 )
 
 // Upgrade outcomes for ConnectionsTotal.

@@ -1,9 +1,11 @@
 package connection
 
 import (
+	"context"
 	"io"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
@@ -87,4 +89,82 @@ func TestClose_RecordsCategory(t *testing.T) {
 	if c.closeReason != metrics.CloseIdleTimeout {
 		t.Fatalf("got %q, want %q", c.closeReason, metrics.CloseIdleTimeout)
 	}
+}
+
+func TestExpiryWatcher(t *testing.T) {
+	// The watcher must close the socket, and must label the close as an
+	// expiry rather than folding it into the generic "server" bucket —
+	// operators need to tell credential churn apart from restarts.
+	t.Run("closes once the deadline passes", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{
+			SendChanCapacity: 4,
+			MaxBufferedBytes: 1 << 20,
+			ExpiresAt:        time.Now().Add(20 * time.Millisecond),
+		})
+		go c.runExpiryWatcher(context.Background())
+
+		select {
+		case <-c.closed:
+		case <-time.After(2 * time.Second):
+			t.Fatal("connection still open well past the credential deadline")
+		}
+		if c.closeReason != metrics.CloseTokenExpired {
+			t.Fatalf("closeReason = %q, want %q", c.closeReason, metrics.CloseTokenExpired)
+		}
+	})
+
+	t.Run("a deadline already in the past closes immediately", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{
+			SendChanCapacity: 4,
+			MaxBufferedBytes: 1 << 20,
+			ExpiresAt:        time.Now().Add(-time.Minute),
+		})
+		c.runExpiryWatcher(context.Background())
+
+		select {
+		case <-c.closed:
+		default:
+			t.Fatal("want an already-expired credential to be refused, not honoured")
+		}
+	})
+
+	// Zero means "never expires": starting a timer would close every
+	// connection authorized by a non-expiring credential.
+	t.Run("no deadline means the watcher returns without closing", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{SendChanCapacity: 4, MaxBufferedBytes: 1 << 20})
+		c.runExpiryWatcher(context.Background())
+
+		select {
+		case <-c.closed:
+			t.Fatal("connection closed despite having no credential deadline")
+		default:
+		}
+	})
+
+	t.Run("context cancellation stops the watcher", func(t *testing.T) {
+		m := metrics.New()
+		c := newTestConn(t, m, ConnConfig{
+			SendChanCapacity: 4,
+			MaxBufferedBytes: 1 << 20,
+			ExpiresAt:        time.Now().Add(time.Hour),
+		})
+		ctx, cancel := context.WithCancel(context.Background())
+		done := make(chan struct{})
+		go func() { c.runExpiryWatcher(ctx); close(done) }()
+		cancel()
+
+		select {
+		case <-done:
+		case <-time.After(2 * time.Second):
+			t.Fatal("watcher ignored context cancellation")
+		}
+		select {
+		case <-c.closed:
+			t.Fatal("shutdown must not be reported as a token expiry")
+		default:
+		}
+	})
 }

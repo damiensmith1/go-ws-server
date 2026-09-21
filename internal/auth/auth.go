@@ -22,6 +22,7 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"time"
 
 	"github.com/golang-jwt/jwt/v5"
 )
@@ -29,6 +30,12 @@ import (
 // Result is what a successful verification returns.
 type Result struct {
 	UserKey string
+
+	// ExpiresAt is when the credential stops being valid, zero if it never
+	// does. Verification happens once, at upgrade; without this the
+	// connection layer has no way to know the token behind a long-lived
+	// socket has since expired.
+	ExpiresAt time.Time
 }
 
 // Verifier inspects an HTTP upgrade request and either authorizes it or
@@ -96,7 +103,13 @@ func NewJWT(cfg JWTConfig, log *slog.Logger) Verifier {
 			log.Warn("userKey query does not match jwt sub", "sub", sub, "userKey", uk)
 			return nil, ErrUnauthorized
 		}
-		return &Result{UserKey: sub}, nil
+		res := &Result{UserKey: sub}
+		// jwt/v5 has already rejected an expired token; what we want here
+		// is the deadline so the socket can be closed when it arrives.
+		if exp, err := claims.GetExpirationTime(); err == nil && exp != nil {
+			res.ExpiresAt = exp.Time
+		}
+		return res, nil
 	})
 }
 

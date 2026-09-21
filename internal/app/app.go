@@ -389,6 +389,7 @@ func serveWS(
 		MaxBufferedBytes: cfg.MaxBufferedBytes,
 		SendChanCapacity: 128,
 		WriteWait:        10 * time.Second,
+		ExpiresAt:        res.ExpiresAt,
 		Metrics:          deps.Metrics,
 	}, log)
 

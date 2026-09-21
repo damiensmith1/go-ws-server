@@ -121,6 +121,7 @@ type Conn struct {
 
 	m           *metrics.Metrics
 	openedAt    time.Time
+	expiresAt   time.Time
 	closeReason string // written once, inside closeOnce
 	readErr     bool   // set by runReader before it returns; read after
 }
@@ -131,6 +132,10 @@ type ConnConfig struct {
 	MaxBufferedBytes int64
 	SendChanCapacity int
 	WriteWait        time.Duration
+
+	// ExpiresAt is the credential deadline from auth.Result. Zero means the
+	// credential does not expire and no deadline watcher is started.
+	ExpiresAt time.Time
 
 	// Metrics is optional. A nil value gets a private collector set, so
 	// call sites never need a nil check.
@@ -159,6 +164,7 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 	return &Conn{
 		m:         cfg.Metrics,
 		openedAt:  time.Now(),
+		expiresAt: cfg.ExpiresAt,
 		ws:        ws,
 		userKey:   cfg.UserKey,
 		log:       log.With("userKey", cfg.UserKey),
@@ -335,6 +341,37 @@ func (c *Conn) runReader(deps readerDeps) {
 
 // runIdleWatcher closes the connection if no inbound activity has been
 // seen for idle. It also drives keepalive pings when keepAlive is true.
+// runExpiryWatcher closes the socket when the credential that authorized
+// it expires.
+//
+// Verification runs once, at upgrade. Without this, a token that is
+// revoked or simply expires keeps its socket for as long as the client
+// keeps it warm — up to WEBSOCKET_TIMEOUT past the moment it stopped
+// being valid, and indefinitely if the client pings. The close code is
+// 1008 (policy violation) so a client can tell "your credential ran out,
+// re-authenticate and reconnect" apart from an idle close or a restart.
+func (c *Conn) runExpiryWatcher(ctx context.Context) {
+	if c.expiresAt.IsZero() {
+		return
+	}
+	d := time.Until(c.expiresAt)
+	if d <= 0 {
+		c.log.Info("credential already expired at upgrade")
+		c.closeWith(websocket.ClosePolicyViolation, "token expired", metrics.CloseTokenExpired)
+		return
+	}
+	timer := time.NewTimer(d)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+	case <-c.closed:
+	case <-timer.C:
+		c.log.Info("credential expired", "expiredAt", c.expiresAt.UTC().Format(time.RFC3339))
+		c.closeWith(websocket.ClosePolicyViolation, "token expired", metrics.CloseTokenExpired)
+	}
+}
+
 func (c *Conn) runIdleWatcher(ctx context.Context, idle time.Duration, keepAlive bool) {
 	if idle <= 0 {
 		<-ctx.Done()
@@ -392,6 +429,7 @@ func (c *Conn) Run(
 ) {
 	go c.runWriter()
 	go c.runIdleWatcher(ctx, idleTimeout, keepAlive)
+	go c.runExpiryWatcher(ctx)
 
 	c.runReader(readerDeps{
 		maxPayload: maxPayload,

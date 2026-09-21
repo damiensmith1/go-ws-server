@@ -126,3 +126,35 @@ func TestInsecureVerifier(t *testing.T) {
 		t.Fatal("expected error on missing userKey")
 	}
 }
+
+func TestJWTCarriesExpiry(t *testing.T) {
+	const secret = "test-secret"
+	v := NewJWT(JWTConfig{Secret: secret}, quietLogger())
+
+	t.Run("exp is surfaced on Result", func(t *testing.T) {
+		exp := time.Now().Add(42 * time.Minute).Truncate(time.Second)
+		req := httptest.NewRequest("GET", "/ws", nil)
+		req.Header.Set("Authorization", "Bearer "+sign(t, secret, jwt.MapClaims{"sub": "u1", "exp": exp.Unix()}))
+
+		res, err := v.Verify(req)
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		if !res.ExpiresAt.Equal(exp) {
+			t.Fatalf("ExpiresAt = %v, want %v", res.ExpiresAt, exp)
+		}
+	})
+
+	t.Run("a token without exp reports no deadline", func(t *testing.T) {
+		req := httptest.NewRequest("GET", "/ws", nil)
+		req.Header.Set("Authorization", "Bearer "+sign(t, secret, jwt.MapClaims{"sub": "u1"}))
+
+		res, err := v.Verify(req)
+		if err != nil {
+			t.Fatalf("Verify: %v", err)
+		}
+		if !res.ExpiresAt.IsZero() {
+			t.Fatalf("ExpiresAt = %v, want zero so no watcher is started", res.ExpiresAt)
+		}
+	})
+}
