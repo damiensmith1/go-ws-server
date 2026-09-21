@@ -108,7 +108,7 @@ func startServerCfg(t *testing.T, cfg *config.Config) (wsURL string, cancel func
 
 	log := slog.New(slog.NewTextHandler(io.Discard, nil))
 
-	a, err := app.New(cfg, log)
+	a, err := app.New(cfg, log, app.Ext{})
 	if err != nil {
 		t.Fatalf("app.New: %v", err)
 	}

@@ -24,6 +24,13 @@ jobs:
             exit 1
           fi
       - run: go vet ./...
+      # Build tags hide code from the default checks: `go build` skips
+      # _test.go files entirely, and `go vet ./...` does not see anything
+      # behind a tag. Without this, a signature change that breaks
+      # integration_test.go is only caught by the Docker job minutes
+      # later. Compiling the tagged test binary needs no Docker.
+      - run: go vet -tags=integration ./...
+      - run: go test -tags=integration -c -o /dev/null .
       - run: go build ./...
       - run: go test -race -timeout 90s ./...
 
