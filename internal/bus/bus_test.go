@@ -208,3 +208,51 @@ func TestBus_RunAndCancel(t *testing.T) {
 	}
 	_ = b.Close()
 }
+
+// handleTopic decides delivery and replay-buffering for every subscriber in
+// a single critical section. This covers the mixed case: subscribers mid-
+// replay must be buffered while the rest are delivered in the same pass.
+func TestHandleTopic_BuffersMidReplayAndDeliversRest(t *testing.T) {
+	b, _ := newBus(t)
+
+	live1, live2, replaying := &fakeSub{}, &fakeSub{}, &fakeSub{}
+	for _, s := range []Subscriber{live1, live2, replaying} {
+		b.AddLocalSubscription("t", s)
+	}
+
+	// Put one subscriber mid-replay, as SubscribeWithReplay would.
+	b.mu.Lock()
+	b.replay[replayKey{replaying, "t"}] = &replayState{
+		buffering: true,
+		seen:      make(map[string]bool),
+	}
+	b.mu.Unlock()
+
+	payload, _ := json.Marshal(wireTopicPayload{
+		StreamID: "5-0",
+		Data:     json.RawMessage(`{"n":1}`),
+	})
+	b.handleTopic("t", string(payload))
+
+	for name, s := range map[string]*fakeSub{"live1": live1, "live2": live2} {
+		if got := s.Snapshot(); len(got) != 1 {
+			t.Fatalf("%s: want 1 frame, got %d", name, len(got))
+		}
+	}
+	if got := replaying.Snapshot(); len(got) != 0 {
+		t.Fatalf("replaying subscriber: want 0 frames, got %d", len(got))
+	}
+
+	b.mu.Lock()
+	buffered := b.replay[replayKey{replaying, "t"}].buf
+	b.mu.Unlock()
+	if len(buffered) != 1 || buffered[0].streamID != "5-0" {
+		t.Fatalf("want 1 buffered msg with streamID 5-0, got %+v", buffered)
+	}
+
+	// Both live subscribers must receive byte-identical frames: handleTopic
+	// encodes once and shares the slice.
+	if string(live1.Snapshot()[0]) != string(live2.Snapshot()[0]) {
+		t.Fatal("live subscribers received differing frames")
+	}
+}

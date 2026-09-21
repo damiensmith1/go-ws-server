@@ -187,26 +187,30 @@ func (b *Bus) handleTopic(topic, payload string) {
 		return
 	}
 
-	// Snapshot the subscriber set under the lock, then process each one
-	// taking the lock briefly per iteration to check replay state.
+	// Decide the entire fan-out in one critical section: buffer for any
+	// subscriber mid-replay, collect the rest. Taking the lock once per
+	// subscriber instead serialises every topic's fan-out on b.mu as soon
+	// as a single topic has many subscribers.
 	b.mu.Lock()
-	set := b.topicSubs[topic]
-	targets := make([]Subscriber, 0, len(set))
-	for s := range set {
-		targets = append(targets, s)
+	deliver := make([]Subscriber, 0, len(b.topicSubs[topic]))
+	for sub := range b.topicSubs[topic] {
+		if st := b.replay[replayKey{sub, topic}]; st != nil && st.buffering {
+			st.buf = append(st.buf, bufferedMsg{streamID: p.StreamID, data: p.Data})
+			continue
+		}
+		deliver = append(deliver, sub)
 	}
 	b.mu.Unlock()
 
-	for _, sub := range targets {
-		b.mu.Lock()
-		st := b.replay[replayKey{sub, topic}]
-		if st != nil && st.buffering {
-			st.buf = append(st.buf, bufferedMsg{streamID: p.StreamID, data: p.Data})
-			b.mu.Unlock()
-			continue
-		}
-		b.mu.Unlock()
-		sub.Send(protocol.EncodePublish(topic, p.Data, p.StreamID, false))
+	if len(deliver) == 0 {
+		return
+	}
+
+	// Encode once and share the frame across subscribers: Send only
+	// enqueues the slice and the writer goroutine never mutates it.
+	frame := protocol.EncodePublish(topic, p.Data, p.StreamID, false)
+	for _, sub := range deliver {
+		sub.Send(frame)
 	}
 }
 
