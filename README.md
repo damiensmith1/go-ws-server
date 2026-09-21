@@ -154,6 +154,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `METRICS_ADDR`                 | —       | Listen address for Prometheus `/metrics`, e.g. `:9090`. Empty disables it. |
 | `READINESS_TIMEOUT_MS`         | `2000`  | Timeout for the Redis ping behind `/readyz`.                      |
 | `AUTHZ_RULES`                  | —       | Per-topic authorization policy as JSON. Empty allows every topic to every authenticated client. |
+| `PRESENCE_TOPIC`               | —       | Topic for connect/disconnect events. Empty disables the feed.     |
 | `SHUTDOWN_TIMEOUT_MS`          | `10000` | Bound on graceful shutdown, including flushing queued frames.     |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
@@ -389,6 +390,26 @@ subscribe may not enumerate subscribers either.
 
 Subscribers are userKeys, deduplicated across sockets — a user with three
 connections to the topic appears once.
+
+### Presence events
+
+Set `PRESENCE_TOPIC` and the server publishes to it when a userKey
+becomes present or absent:
+
+```json
+{ "event": "connected",    "userKey": "alice", "at": "2026-09-21T10:04:01Z" }
+{ "event": "disconnected", "userKey": "alice", "at": "2026-09-21T10:41:12Z" }
+```
+
+Fired on the **first** and **last** socket only, so a user with three
+tabs open produces one `connected` and one `disconnected`, not three of
+each.
+
+Off by default: publishing user activity to a topic others may subscribe
+to should be a deliberate choice. If you enable it, cover the topic in
+`AUTHZ_RULES` — otherwise any authenticated client can watch everyone
+come and go. Publishing failures are logged and swallowed, since a
+presence feed must never be able to fail a connection or a disconnection.
 
 ### List subscriptions
 

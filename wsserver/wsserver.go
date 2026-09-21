@@ -78,6 +78,10 @@ type Options struct {
 	JWTAudience string
 	JWTIssuer   string
 
+	// PresenceTopic receives connect and disconnect events for the first
+	// and last socket of each userKey. Empty disables the feed.
+	PresenceTopic string
+
 	// Authorizer gates per-topic access. Nil allows every topic to every
 	// authenticated client, which is only appropriate for a single tenant.
 	Authorizer authz.Authorizer
@@ -180,6 +184,7 @@ func OptionsFromEnv() (Options, error) {
 		JWTAudience:           cfg.AuthJWTAudience,
 		JWTIssuer:             cfg.AuthJWTIssuer,
 		LogLevel:              cfg.LogLevel,
+		PresenceTopic:         cfg.PresenceTopic,
 		AllowedOrigins:        cfg.AllowedOrigins,
 		TLSCertPath:           cfg.TLSCertPath,
 		TLSKeyPath:            cfg.TLSKeyPath,
@@ -310,6 +315,7 @@ func (o Options) toConfig() (*config.Config, error) {
 		AuthJWTSecret:           o.JWTSecret,
 		AuthJWTAudience:         o.JWTAudience,
 		AuthJWTIssuer:           o.JWTIssuer,
+		PresenceTopic:           o.PresenceTopic,
 		WebSocketTimeout:        o.IdleTimeout,
 		MaxPayloadBytes:         orInt64(o.MaxPayloadBytes, 64*1024),
 		MaxBufferedBytes:        orInt64(o.MaxBufferedBytes, 1024*1024),

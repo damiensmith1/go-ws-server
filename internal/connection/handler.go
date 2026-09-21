@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"time"
 
 	"github.com/redis/go-redis/v9"
 
@@ -33,6 +34,12 @@ type Deps struct {
 	// Authorizer gates per-topic access. A nil value allows everything,
 	// which is the behaviour the server had before authorization existed.
 	Authorizer authz.Authorizer
+
+	// PresenceTopic receives connect and disconnect events for the first
+	// and last socket of each userKey. Empty disables the feed, which is
+	// the default: publishing user activity to a topic anyone might
+	// subscribe to should be a deliberate choice.
+	PresenceTopic string
 
 	// Metrics is optional. A nil value gets a private collector set, so
 	// call sites never need a nil check.
@@ -364,12 +371,52 @@ func handleBroadcast(ctx context.Context, c *Conn, env *protocol.Envelope, d Dep
 	return "", nil
 }
 
+// Presence event names published to Deps.PresenceTopic.
+const (
+	PresenceConnected    = "connected"
+	PresenceDisconnected = "disconnected"
+)
+
+type presenceEvent struct {
+	Event   string `json:"event"`
+	UserKey string `json:"userKey"`
+	At      string `json:"at"`
+}
+
+// PublishPresence announces that a userKey has become present or absent.
+//
+// Fired only for the first and last socket of a userKey, not every
+// connection: a user with three tabs open is present once. Failures are
+// logged and swallowed — a presence feed is an observation of the system,
+// and must never be able to fail a connection or a disconnection.
+func PublishPresence(ctx context.Context, userKey, event string, d Deps) {
+	if d.PresenceTopic == "" || d.Bus == nil {
+		return
+	}
+	payload, err := json.Marshal(presenceEvent{
+		Event:   event,
+		UserKey: userKey,
+		At:      time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		return
+	}
+	if _, err := d.Bus.PublishTopic(ctx, d.PresenceTopic, payload); err != nil {
+		d.logger().Warn("publish presence event failed",
+			"event", event, "userKey", userKey, "topic", d.PresenceTopic, "err", err.Error())
+	}
+}
+
 // Cleanup is called once per connection on disconnect. Mirrors the TS
 // handleDisconnection: drop local subscriptions, decrement the global
 // connection count, and on the last socket for this userKey release any
 // locks and remove all topic subscriptions.
 func Cleanup(ctx context.Context, c *Conn, d Deps, isLast bool) {
 	d.Bus.RemoveSubscriberAll(c)
+
+	if isLast {
+		PublishPresence(ctx, c.UserKey(), PresenceDisconnected, d)
+	}
 
 	if isLast {
 		topics, err := redisx.LockedTopics(ctx, d.RDB, c.UserKey())

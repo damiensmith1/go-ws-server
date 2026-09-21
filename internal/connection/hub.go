@@ -33,10 +33,16 @@ func NewHub(log *slog.Logger) *Hub {
 	return &Hub{users: make(map[string][]*Conn), log: log}
 }
 
-func (h *Hub) Add(c *Conn) {
+// Add registers a connection and reports whether it is the first socket
+// for its userKey. Remove mirrors it, reporting whether it was the last.
+// The pair is what a presence feed needs: a user with three sockets is
+// present once, not three times.
+func (h *Hub) Add(c *Conn) bool {
 	h.mu.Lock()
 	defer h.mu.Unlock()
+	first := len(h.users[c.userKey]) == 0
 	h.users[c.userKey] = append(h.users[c.userKey], c)
+	return first
 }
 
 // Remove drops c from the hub. Returns true if c was the last connection

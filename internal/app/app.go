@@ -234,6 +234,7 @@ func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 		JobRateLimit:     ratelimit.DefaultJobConfig(cfg.RateLimitJobsPerMin),
 		OnSchedulerWake:  sched.Wake,
 		Authorizer:       authorizer,
+		PresenceTopic:    cfg.PresenceTopic,
 		Metrics:          m,
 	}
 
@@ -456,7 +457,9 @@ func serveWS(
 		Metrics:             deps.Metrics,
 	}, log)
 
-	hub.Add(conn)
+	if first := hub.Add(conn); first {
+		connection.PublishPresence(rootCtx, conn.UserKey(), connection.PresenceConnected, deps)
+	}
 	if err := redisx.AddConnection(rootCtx, deps.RDB, conn.UserKey()); err != nil {
 		log.Warn("AddConnection failed", "err", err.Error())
 	}

@@ -55,6 +55,10 @@ type Config struct {
 	// on every topic.
 	AuthzRules string
 
+	// PresenceTopic receives connect and disconnect events for the first
+	// and last socket of each userKey. Empty disables the feed.
+	PresenceTopic string
+
 	AuthJWTSecret   string
 	AuthJWTAudience string
 	AuthJWTIssuer   string
@@ -119,7 +123,8 @@ func Load() (*Config, error) {
 		TLSKeyPath:  os.Getenv("TLS_KEY_PATH"),
 		TLSCertPath: os.Getenv("TLS_CERT_PATH"),
 
-		AuthzRules: getenv("AUTHZ_RULES", ""),
+		AuthzRules:    getenv("AUTHZ_RULES", ""),
+		PresenceTopic: getenv("PRESENCE_TOPIC", ""),
 
 		LogLevel:   getenv("LOG_LEVEL", "info"),
 		InstanceID: getenv("INSTANCE_ID", uuid.NewString()),
