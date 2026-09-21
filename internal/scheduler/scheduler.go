@@ -43,7 +43,7 @@ type Config struct {
 // Run. Wake() can be called when a new job is added to nudge the loop.
 type Scheduler struct {
 	cfg    Config
-	rdb    *redis.Client
+	rdb    redis.UniversalClient
 	log    *slog.Logger
 	client *http.Client
 
@@ -53,7 +53,7 @@ type Scheduler struct {
 
 // New builds a Scheduler. The HTTP client uses a Dialer.Control SSRF check
 // and refuses redirects (matching the TS `maxRedirects: 0`).
-func New(rdb *redis.Client, cfg Config, log *slog.Logger) *Scheduler {
+func New(rdb redis.UniversalClient, cfg Config, log *slog.Logger) *Scheduler {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -340,7 +340,7 @@ func MarshalJobForLog(jd *protocol.JobData) ([]byte, error) {
 
 // ResumeOnStartup decides whether to start ticking immediately. Returns
 // the count of pending jobs.
-func ResumeOnStartup(ctx context.Context, rdb *redis.Client, log *slog.Logger) (int64, error) {
+func ResumeOnStartup(ctx context.Context, rdb redis.UniversalClient, log *slog.Logger) (int64, error) {
 	n, err := redisx.JobCount(ctx, rdb)
 	if err != nil {
 		return 0, err

@@ -12,7 +12,6 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strconv"
 	"sync"
 	"time"
 
@@ -34,9 +33,9 @@ import (
 type App struct {
 	cfg      *config.Config
 	log      *slog.Logger
-	rdb      *redis.Client
-	pub      *redis.Client
-	sub      *redis.Client
+	rdb      redis.UniversalClient
+	pub      redis.UniversalClient
+	sub      redis.UniversalClient
 	hub      *connection.Hub
 	bus      *bus.Bus
 	sched    *scheduler.Scheduler
@@ -50,10 +49,14 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		log = slog.Default()
 	}
 
-	addr := cfg.RedisHost + ":" + strconv.Itoa(cfg.RedisPort)
-	rdb := redisx.New(redisx.Options{Addr: addr, Password: cfg.RedisPassword})
-	pub := redisx.New(redisx.Options{Addr: addr, Password: cfg.RedisPassword})
-	sub := redisx.New(redisx.Options{Addr: addr, Password: cfg.RedisPassword})
+	ropts := redisx.Options{
+		Addrs:      cfg.RedisAddrList(),
+		Password:   cfg.RedisPassword,
+		MasterName: cfg.RedisMasterName,
+	}
+	rdb := redisx.New(ropts)
+	pub := redisx.New(ropts)
+	sub := redisx.New(ropts)
 
 	var verifier auth.Verifier
 	if cfg.AuthJWTSecret == "" {

@@ -68,8 +68,8 @@ type Config struct {
 // Bus is the running pub/sub + replay coordinator.
 type Bus struct {
 	cfg       Config
-	pub       *redis.Client
-	sub       *redis.Client
+	pub       redis.UniversalClient
+	sub       redis.UniversalClient
 	log       *slog.Logger
 	broadcast BroadcastTarget
 
@@ -102,7 +102,7 @@ type bufferedMsg struct {
 // New constructs a Bus. The two redis clients should be distinct: pub
 // handles regular commands (XADD, XRANGE, PUBLISH); sub holds the
 // PSUBSCRIBE.
-func New(pub, sub *redis.Client, target BroadcastTarget, cfg Config, log *slog.Logger) *Bus {
+func New(pub, sub redis.UniversalClient, target BroadcastTarget, cfg Config, log *slog.Logger) *Bus {
 	if log == nil {
 		log = slog.Default()
 	}

@@ -52,6 +52,8 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | Variable                       | Default | Description                                                       |
 | ------------------------------ | ------- | ----------------------------------------------------------------- |
 | `REDIS_HOST` / `REDIS_PORT`    | —       | Redis location.                                                   |
+| `REDIS_ADDRS`                  | —       | Comma-separated addresses; overrides `REDIS_HOST`/`REDIS_PORT`. Several addresses select a Cluster client. |
+| `REDIS_MASTER_NAME`            | —       | Set with `REDIS_ADDRS` to use Sentinel failover.                  |
 | `REDIS_PASSWORD`               | —       | Redis auth.                                                       |
 | `WEBSOCKET_PORT`               | `8080`  | Listen port.                                                      |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |

@@ -20,7 +20,7 @@ import (
 // reach for, and missing fields cause compile errors rather than silent
 // nil panics.
 type Deps struct {
-	RDB              *redis.Client
+	RDB              redis.UniversalClient
 	Bus              *bus.Bus
 	Hub              *Hub
 	Log              *slog.Logger

@@ -46,7 +46,7 @@ func lockKey(topic string, kind LockKind) string {
 
 // LockTopic atomically acquires (or refreshes) the named topic lock for the
 // given holder. Returns ErrLockHeldByOther if another holder owns it.
-func LockTopic(ctx context.Context, c *redis.Client, topic string, kind LockKind, holder string, ttl time.Duration) error {
+func LockTopic(ctx context.Context, c redis.UniversalClient, topic string, kind LockKind, holder string, ttl time.Duration) error {
 	if ttl <= 0 {
 		ttl = DefaultLockTTL
 	}
@@ -76,7 +76,7 @@ func LockTopic(ctx context.Context, c *redis.Client, topic string, kind LockKind
 
 // UnlockTopic releases the lock if (and only if) holder currently owns it.
 // Silent no-op when the lock is missing or owned by someone else.
-func UnlockTopic(ctx context.Context, c *redis.Client, topic string, kind LockKind, holder string) error {
+func UnlockTopic(ctx context.Context, c redis.UniversalClient, topic string, kind LockKind, holder string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 
@@ -94,7 +94,7 @@ func UnlockTopic(ctx context.Context, c *redis.Client, topic string, kind LockKi
 
 // RenewLock extends the TTL on a lock the caller already owns. Returns
 // ErrLockNotHeld if the caller is not the current owner.
-func RenewLock(ctx context.Context, c *redis.Client, topic string, kind LockKind, holder string, ttl time.Duration) error {
+func RenewLock(ctx context.Context, c redis.UniversalClient, topic string, kind LockKind, holder string, ttl time.Duration) error {
 	if ttl <= 0 {
 		ttl = DefaultLockTTL
 	}
@@ -121,7 +121,7 @@ func RenewLock(ctx context.Context, c *redis.Client, topic string, kind LockKind
 // IsTopicLockedByOther reports whether the named lock is held by someone
 // other than userKey. A lock held by the caller, or no lock at all, returns
 // false.
-func IsTopicLockedByOther(ctx context.Context, c *redis.Client, topic string, kind LockKind, userKey string) (bool, error) {
+func IsTopicLockedByOther(ctx context.Context, c redis.UniversalClient, topic string, kind LockKind, userKey string) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	owner, err := c.Get(ctx, lockKey(topic, kind)).Result()
@@ -137,7 +137,7 @@ func IsTopicLockedByOther(ctx context.Context, c *redis.Client, topic string, ki
 // LockedTopics returns the topics the holder currently owns locks on. Note
 // that, in the TS implementation, a single set is shared by both lock
 // kinds — we preserve that shape.
-func LockedTopics(ctx context.Context, c *redis.Client, holder string) ([]string, error) {
+func LockedTopics(ctx context.Context, c redis.UniversalClient, holder string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	return c.SMembers(ctx, holder+":lockedTopics").Result()
@@ -145,7 +145,7 @@ func LockedTopics(ctx context.Context, c *redis.Client, holder string) ([]string
 
 // ReleaseUserLocks unlocks every lock owned by holder, across both kinds.
 // Used during graceful shutdown and on last-socket disconnect.
-func ReleaseUserLocks(ctx context.Context, c *redis.Client, holder string) error {
+func ReleaseUserLocks(ctx context.Context, c redis.UniversalClient, holder string) error {
 	topics, err := LockedTopics(ctx, c, holder)
 	if err != nil {
 		return err

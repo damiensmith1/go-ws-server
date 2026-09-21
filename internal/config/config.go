@@ -8,6 +8,7 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strconv"
 	"strings"
@@ -21,6 +22,12 @@ type Config struct {
 	RedisHost     string
 	RedisPort     int
 	RedisPassword string
+
+	// RedisAddrs overrides RedisHost/RedisPort and selects the topology:
+	// one address is a plain client, several are a Cluster client. Setting
+	// RedisMasterName makes it a Sentinel failover client instead.
+	RedisAddrs      []string
+	RedisMasterName string
 
 	WebSocketPort     int
 	WebSocketTimeout  time.Duration
@@ -57,6 +64,9 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		RedisHost:     getenv("REDIS_HOST", ""),
 		RedisPassword: os.Getenv("REDIS_PASSWORD"),
+
+		RedisAddrs:      getcsv("REDIS_ADDRS"),
+		RedisMasterName: os.Getenv("REDIS_MASTER_NAME"),
 
 		AuthJWTSecret:   os.Getenv("AUTH_JWT_SECRET"),
 		AuthJWTAudience: os.Getenv("AUTH_JWT_AUDIENCE"),
@@ -119,14 +129,24 @@ func Load() (*Config, error) {
 	return cfg, nil
 }
 
+// RedisAddrList returns the addresses to dial. REDIS_ADDRS wins when set;
+// otherwise the single REDIS_HOST:REDIS_PORT pair is used, so existing
+// single-node deployments need no config change.
+func (c *Config) RedisAddrList() []string {
+	if len(c.RedisAddrs) > 0 {
+		return c.RedisAddrs
+	}
+	return []string{net.JoinHostPort(c.RedisHost, strconv.Itoa(c.RedisPort))}
+}
+
 // TLSEnabled reports whether the server should listen with TLS.
 func (c *Config) TLSEnabled() bool {
 	return c.TLSKeyPath != "" && c.TLSCertPath != ""
 }
 
 func (c *Config) validate() error {
-	if c.RedisHost == "" {
-		return errors.New("REDIS_HOST is required")
+	if c.RedisHost == "" && len(c.RedisAddrs) == 0 {
+		return errors.New("REDIS_HOST or REDIS_ADDRS is required")
 	}
 	// Both TLS paths or neither — partial config is almost certainly a mistake.
 	if (c.TLSKeyPath == "") != (c.TLSCertPath == "") {
@@ -142,6 +162,18 @@ func (c *Config) validate() error {
 		return errors.New("MAX_BUFFERED_BYTES must be positive")
 	}
 	return nil
+}
+
+// getcsv splits a comma-separated env var, trimming spaces and dropping
+// empty entries. An unset or all-empty value returns nil.
+func getcsv(key string) []string {
+	var out []string
+	for _, part := range strings.Split(os.Getenv(key), ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func getenv(key, fallback string) string {

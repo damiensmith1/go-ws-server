@@ -43,7 +43,7 @@ return current
 `)
 
 // Allow returns true if the request is within the configured limit.
-func Allow(ctx context.Context, c *redis.Client, bucket, userKey string, cfg Config) (bool, error) {
+func Allow(ctx context.Context, c redis.UniversalClient, bucket, userKey string, cfg Config) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 

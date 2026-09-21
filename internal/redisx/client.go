@@ -13,17 +13,24 @@ import (
 )
 
 // Options configures a Redis client.
+//
+// Addrs selects the topology, following go-redis's UniversalClient rules:
+// a single address is a plain client, several are a Cluster client, and
+// any number with MasterName set is a Sentinel failover client. Callers
+// that only have a host:port pass it as the sole entry in Addrs.
 type Options struct {
-	Addr     string
-	Password string
+	Addrs      []string
+	Password   string
+	MasterName string
 }
 
-// New returns a configured *redis.Client. The client lazily connects on
+// New returns a configured redis.UniversalClient. The client lazily connects on
 // first command, mirroring the TS `lazyConnect: true` setting.
-func New(opts Options) *redis.Client {
-	return redis.NewClient(&redis.Options{
-		Addr:        opts.Addr,
+func New(opts Options) redis.UniversalClient {
+	return redis.NewUniversalClient(&redis.UniversalOptions{
+		Addrs:       opts.Addrs,
 		Password:    opts.Password,
+		MasterName:  opts.MasterName,
 		DialTimeout: 5 * time.Second,
 		ReadTimeout: 5 * time.Second,
 		MaxRetries:  3,
@@ -33,7 +40,7 @@ func New(opts Options) *redis.Client {
 // AddConnection increments the per-userKey active-connection refcount and,
 // on the first connection, adds the userKey to the global `activeConnections`
 // set.
-func AddConnection(ctx context.Context, c *redis.Client, userKey string) error {
+func AddConnection(ctx context.Context, c redis.UniversalClient, userKey string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	count, err := c.Incr(ctx, "conn:count:"+userKey).Result()
@@ -50,7 +57,7 @@ func AddConnection(ctx context.Context, c *redis.Client, userKey string) error {
 
 // RemoveConnection decrements the per-userKey refcount; on reaching zero it
 // deletes the count key and removes the userKey from `activeConnections`.
-func RemoveConnection(ctx context.Context, c *redis.Client, userKey string) error {
+func RemoveConnection(ctx context.Context, c redis.UniversalClient, userKey string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	count, err := c.Decr(ctx, "conn:count:"+userKey).Result()
@@ -70,7 +77,7 @@ func RemoveConnection(ctx context.Context, c *redis.Client, userKey string) erro
 
 // AddTopicSubscription records that userKey is subscribed to topic, in both
 // the per-topic membership set and the per-userKey index set.
-func AddTopicSubscription(ctx context.Context, c *redis.Client, userKey, topic string) error {
+func AddTopicSubscription(ctx context.Context, c redis.UniversalClient, userKey, topic string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := c.SAdd(ctx, "topic:"+topic, userKey).Err(); err != nil {
@@ -83,7 +90,7 @@ func AddTopicSubscription(ctx context.Context, c *redis.Client, userKey, topic s
 }
 
 // RemoveTopicSubscription is the inverse of AddTopicSubscription.
-func RemoveTopicSubscription(ctx context.Context, c *redis.Client, userKey, topic string) error {
+func RemoveTopicSubscription(ctx context.Context, c redis.UniversalClient, userKey, topic string) error {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := c.SRem(ctx, "topic:"+topic, userKey).Err(); err != nil {
@@ -96,7 +103,7 @@ func RemoveTopicSubscription(ctx context.Context, c *redis.Client, userKey, topi
 }
 
 // SubscribedTopics returns every topic the given userKey is subscribed to.
-func SubscribedTopics(ctx context.Context, c *redis.Client, userKey string) ([]string, error) {
+func SubscribedTopics(ctx context.Context, c redis.UniversalClient, userKey string) ([]string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	return c.SMembers(ctx, userKey+":subscribedTopics").Result()

@@ -29,7 +29,7 @@ type StoredJob struct {
 
 // AddJob inserts a job into the scheduler. Returns an error if a job with
 // the same ID already exists in the set.
-func AddJob(ctx context.Context, c *redis.Client, j *protocol.JobData) error {
+func AddJob(ctx context.Context, c redis.UniversalClient, j *protocol.JobData) error {
 	if j == nil || j.JobID == "" {
 		return errors.New("job must have a jobId")
 	}
@@ -56,7 +56,7 @@ func AddJob(ctx context.Context, c *redis.Client, j *protocol.JobData) error {
 	return c.ZAdd(ctx, SchedulerSetKey, redis.Z{Score: score, Member: payload}).Err()
 }
 
-func jobExists(ctx context.Context, c *redis.Client, jobID string) (bool, error) {
+func jobExists(ctx context.Context, c redis.UniversalClient, jobID string) (bool, error) {
 	members, err := c.ZRange(ctx, SchedulerSetKey, 0, -1).Result()
 	if err != nil {
 		return false, fmt.Errorf("zrange scheduler: %w", err)
@@ -75,7 +75,7 @@ func jobExists(ctx context.Context, c *redis.Client, jobID string) (bool, error)
 
 // RemoveJob deletes the job with the given ID from the scheduler. Errors
 // if the job is not present.
-func RemoveJob(ctx context.Context, c *redis.Client, jobID string) error {
+func RemoveJob(ctx context.Context, c redis.UniversalClient, jobID string) error {
 	members, err := c.ZRange(ctx, SchedulerSetKey, 0, -1).Result()
 	if err != nil {
 		return fmt.Errorf("zrange scheduler: %w", err)
@@ -104,7 +104,7 @@ type DueJobsResult struct {
 
 // ListDueJobs returns every scheduler member with score ≤ nowMs (as Unix
 // milliseconds), parsed.
-func ListDueJobs(ctx context.Context, c *redis.Client, nowMs int64) ([]DueJobsResult, error) {
+func ListDueJobs(ctx context.Context, c redis.UniversalClient, nowMs int64) ([]DueJobsResult, error) {
 	raws, err := c.ZRangeByScore(ctx, SchedulerSetKey, &redis.ZRangeBy{
 		Min: "0",
 		Max: fmt.Sprintf("%d", nowMs),
@@ -125,7 +125,7 @@ func ListDueJobs(ctx context.Context, c *redis.Client, nowMs int64) ([]DueJobsRe
 
 // RemoveJobMember atomically deletes a specific zset member. Returns true
 // when the member was present and removed.
-func RemoveJobMember(ctx context.Context, c *redis.Client, member string) (bool, error) {
+func RemoveJobMember(ctx context.Context, c redis.UniversalClient, member string) (bool, error) {
 	n, err := c.ZRem(ctx, SchedulerSetKey, member).Result()
 	if err != nil {
 		return false, fmt.Errorf("zrem job member: %w", err)
@@ -135,7 +135,7 @@ func RemoveJobMember(ctx context.Context, c *redis.Client, member string) (bool,
 
 // AddRescheduledJob inserts a job at a new execution time. The caller is
 // expected to update stored.JobData.ExecuteAt before calling.
-func AddRescheduledJob(ctx context.Context, c *redis.Client, stored StoredJob, atMs int64) error {
+func AddRescheduledJob(ctx context.Context, c redis.UniversalClient, stored StoredJob, atMs int64) error {
 	payload, err := json.Marshal(stored)
 	if err != nil {
 		return fmt.Errorf("marshal stored job: %w", err)
@@ -145,7 +145,7 @@ func AddRescheduledJob(ctx context.Context, c *redis.Client, stored StoredJob, a
 
 // NextDueAt returns the score (Unix ms) of the soonest pending job, or
 // (-1, false, nil) if the scheduler is empty.
-func NextDueAt(ctx context.Context, c *redis.Client) (int64, bool, error) {
+func NextDueAt(ctx context.Context, c redis.UniversalClient) (int64, bool, error) {
 	zs, err := c.ZRangeWithScores(ctx, SchedulerSetKey, 0, 0).Result()
 	if err != nil {
 		return -1, false, fmt.Errorf("zrange scheduler: %w", err)
@@ -159,7 +159,7 @@ func NextDueAt(ctx context.Context, c *redis.Client) (int64, bool, error) {
 // ClaimJob atomically reserves the right to execute a given job for ttl.
 // Returns true if this caller won the claim; false if another instance
 // claimed it first.
-func ClaimJob(ctx context.Context, c *redis.Client, jobID, instanceID string, ttl time.Duration) (bool, error) {
+func ClaimJob(ctx context.Context, c redis.UniversalClient, jobID, instanceID string, ttl time.Duration) (bool, error) {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
@@ -172,6 +172,6 @@ func ClaimJob(ctx context.Context, c *redis.Client, jobID, instanceID string, tt
 
 // JobCount returns the number of pending jobs, used at startup to decide
 // whether to start the scheduler tick loop.
-func JobCount(ctx context.Context, c *redis.Client) (int64, error) {
+func JobCount(ctx context.Context, c redis.UniversalClient) (int64, error) {
 	return c.ZCard(ctx, SchedulerSetKey).Result()
 }
