@@ -9,6 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/damiensmith1/go-ws-server/internal/authz"
 	"github.com/damiensmith1/go-ws-server/internal/bus"
 	"github.com/damiensmith1/go-ws-server/internal/metrics"
 	"github.com/damiensmith1/go-ws-server/internal/protocol"
@@ -29,9 +30,29 @@ type Deps struct {
 	JobRateLimit     ratelimit.Config
 	OnSchedulerWake  func()
 
+	// Authorizer gates per-topic access. A nil value allows everything,
+	// which is the behaviour the server had before authorization existed.
+	Authorizer authz.Authorizer
+
 	// Metrics is optional. A nil value gets a private collector set, so
 	// call sites never need a nil check.
 	Metrics *metrics.Metrics
+}
+
+// logger and metrics resolve the optional Deps fields once, so handlers
+// never repeat the nil check.
+func (d Deps) logger() *slog.Logger {
+	if d.Log != nil {
+		return d.Log
+	}
+	return slog.Default()
+}
+
+func (d Deps) metrics() *metrics.Metrics {
+	if d.Metrics != nil {
+		return d.Metrics
+	}
+	return metrics.New()
 }
 
 // knownFrameTypes bounds the `type` label. env.Type is client-controlled,
@@ -54,6 +75,42 @@ func frameTypeLabel(t string) string {
 		return t
 	}
 	return "unknown"
+}
+
+// authorize runs the per-topic policy for one frame.
+//
+// The three outcomes are kept apart deliberately. Allowed proceeds.
+// Denied is the client's own fault and is named plainly in the reply.
+// Anything else means the policy could not be evaluated — the caller
+// still fails closed, but the client is told "Internal error" rather than
+// "not authorized", because reporting an outage as a permission change
+// sends operators hunting through policy config for a problem that is not
+// there.
+func authorize(ctx context.Context, c *Conn, action authz.Action, topic string, d Deps) error {
+	m, log := d.metrics(), d.logger()
+	if d.Authorizer == nil {
+		m.AuthzDecisions.WithLabelValues(string(action), "allowed").Inc()
+		return nil
+	}
+	err := d.Authorizer.Authorize(ctx, authz.Request{
+		UserKey: c.UserKey(),
+		Action:  action,
+		Topic:   topic,
+		Claims:  c.Claims(),
+	})
+	switch {
+	case err == nil:
+		m.AuthzDecisions.WithLabelValues(string(action), "allowed").Inc()
+		return nil
+	case authz.Denied(err):
+		m.AuthzDecisions.WithLabelValues(string(action), "denied").Inc()
+		log.Info("topic access denied", "userKey", c.UserKey(), "action", string(action), "topic", topic)
+		return fmt.Errorf("Not authorized to %s topic %s.", action, topic)
+	default:
+		m.AuthzDecisions.WithLabelValues(string(action), "error").Inc()
+		log.Error("authorization check failed", "action", string(action), "topic", topic, "err", err.Error())
+		return errors.New("Internal error")
+	}
 }
 
 func decisionLabel(allowed bool) string {
@@ -140,6 +197,9 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 }
 
 func handleSubscribe(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if err := authorize(ctx, c, authz.ActionSubscribe, env.Topic, d); err != nil {
+		return "", err
+	}
 	// Lock check + Redis-side subscription registration.
 	locked, err := redisx.IsTopicLockedByOther(ctx, d.RDB, env.Topic, redisx.LockSubscribe, c.UserKey())
 	if err != nil {
@@ -171,6 +231,10 @@ func handleSubscribe(ctx context.Context, c *Conn, env *protocol.Envelope, d Dep
 	return fmt.Sprintf("Successfully subscribed to topic %s", env.Topic), nil
 }
 
+// handleUnsubscribe is deliberately not gated. Dropping your own
+// subscription removes access; it never grants any, and a policy change
+// that revokes subscribe must not also trap a client in a topic it can no
+// longer read.
 func handleUnsubscribe(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
 	if err := redisx.RemoveTopicSubscription(ctx, d.RDB, c.UserKey(), env.Topic); err != nil {
 		return "", err
@@ -180,6 +244,9 @@ func handleUnsubscribe(ctx context.Context, c *Conn, env *protocol.Envelope, d D
 }
 
 func handlePublish(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if err := authorize(ctx, c, authz.ActionPublish, env.Topic, d); err != nil {
+		return "", err
+	}
 	locked, err := redisx.IsTopicLockedByOther(ctx, d.RDB, env.Topic, redisx.LockPublish, c.UserKey())
 	if err != nil {
 		return "", fmt.Errorf("check publish lock: %w", err)
@@ -194,6 +261,9 @@ func handlePublish(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps)
 }
 
 func handleLockTopic(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if err := authorize(ctx, c, authz.ActionLock, env.Topic, d); err != nil {
+		return "", err
+	}
 	if err := redisx.LockTopic(ctx, d.RDB, env.Topic, redisx.LockKind(env.LockType), c.UserKey(), redisx.DefaultLockTTL); err != nil {
 		if errors.Is(err, redisx.ErrLockHeldByOther) {
 			return "", fmt.Errorf("Cannot lock topic %s for %s. It is already locked.", env.Topic, env.LockType)
@@ -204,6 +274,9 @@ func handleLockTopic(ctx context.Context, c *Conn, env *protocol.Envelope, d Dep
 }
 
 func handleUnlockTopic(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if err := authorize(ctx, c, authz.ActionLock, env.Topic, d); err != nil {
+		return "", err
+	}
 	if err := redisx.UnlockTopic(ctx, d.RDB, env.Topic, redisx.LockKind(env.LockType), c.UserKey()); err != nil {
 		return "", err
 	}
@@ -211,6 +284,9 @@ func handleUnlockTopic(ctx context.Context, c *Conn, env *protocol.Envelope, d D
 }
 
 func handleRenewLock(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if err := authorize(ctx, c, authz.ActionLock, env.Topic, d); err != nil {
+		return "", err
+	}
 	if err := redisx.RenewLock(ctx, d.RDB, env.Topic, redisx.LockKind(env.LockType), c.UserKey(), redisx.DefaultLockTTL); err != nil {
 		if errors.Is(err, redisx.ErrLockNotHeld) {
 			return "", fmt.Errorf("Cannot renew lock on topic %s. It is either not locked or locked by another user.", env.Topic)

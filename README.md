@@ -60,6 +60,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `ALLOWED_ORIGINS`              | —       | Comma-separated `Origin` allowlist for upgrades. Empty keeps the same-origin default; `*` allows all (dev only). |
 | `METRICS_ADDR`                 | —       | Listen address for Prometheus `/metrics`, e.g. `:9090`. Empty disables it. |
 | `READINESS_TIMEOUT_MS`         | `2000`  | Timeout for the Redis ping behind `/readyz`.                      |
+| `AUTHZ_RULES`                  | —       | Per-topic authorization policy as JSON. Empty allows every topic to every authenticated client. |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
 | `MAX_BUFFERED_BYTES`           | `1048576` | Per-socket outbound buffer threshold; messages drop above this. |
@@ -129,6 +130,73 @@ with no `exp` claim gets no deadline. Closes are counted under
 
 A custom `auth.Verifier` opts in by setting `Result.ExpiresAt`; leaving
 it zero preserves the previous behaviour.
+
+## Authorization
+
+Authentication answers "who is this?" once, at the upgrade.
+Authorization answers "may this identity do this, *here*?" on every frame
+that names a topic. Without the second, any client that can connect can
+read and write every topic on the server.
+
+Three actions are gated: `subscribe` (reading a topic, including replay),
+`publish` (writing to it), and `lock` (taking, renewing or releasing a
+topic lock — at least as powerful as the action it locks).
+`unsubscribe` is deliberately ungated: dropping your own subscription
+only ever removes access, and gating it would let a policy change trap a
+client inside a topic it can no longer read.
+
+### Declarative rules
+
+Set `AUTHZ_RULES` to a JSON object mapping each action to glob patterns:
+
+```json
+{
+  "subscribe": ["tenant.{userKey}.*", "announcements.*"],
+  "publish":   ["tenant.{userKey}.*"],
+  "lock":      ["tenant.{userKey}.*"]
+}
+```
+
+- `*` matches exactly one dot-separated segment, so `orders.*` matches
+  `orders.created` but not `orders.eu.created`.
+- `{userKey}` is replaced by the caller's verified identity. The
+  substitution is escaped, so a userKey containing `*` cannot widen its
+  own pattern into other tenants' topics.
+- **An action you omit denies every topic for that action.** A policy
+  that forgets `lock` disables locking rather than leaving it open.
+- An unknown action name or an invalid pattern is rejected at startup,
+  not silently ignored.
+
+Leaving `AUTHZ_RULES` unset preserves the previous behaviour — every
+authenticated client may act on every topic — and logs a warning at
+startup, the same way an unset `AUTH_JWT_SECRET` does.
+
+### Custom policy
+
+For anything rules cannot express, implement `authz.Authorizer`:
+
+```go
+type Authorizer interface {
+    Authorize(ctx context.Context, req authz.Request) error
+}
+```
+
+`req` carries the `UserKey`, the `Action`, the `Topic` and the
+credential's `Claims`, so a policy can read roles, tenants or scopes
+without re-parsing the token per frame.
+
+Return `nil` to allow, `authz.ErrDenied` (or an error wrapping it) to
+refuse, and **any other error when you could not reach a verdict**. That
+distinction is load-bearing: a denial is reported to the client as
+`Not authorized to <action> topic <topic>.`, while a failure to decide
+fails closed but reports `Internal error`, so an outage in your policy
+store is not mistaken for a permission change. The two are counted
+separately as `authz_decisions_total{action,decision}` with `decision` of
+`allowed`, `denied` or `error`.
+
+Implementations are called on the hot path of every topic-bearing frame,
+possibly concurrently, so they must be safe for concurrent use and must
+not block unboundedly.
 
 ## Connecting
 

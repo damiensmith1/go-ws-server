@@ -36,6 +36,12 @@ type Result struct {
 	// connection layer has no way to know the token behind a long-lived
 	// socket has since expired.
 	ExpiresAt time.Time
+
+	// Claims are the credential's claims, passed through for an
+	// authz.Authorizer to read. Carrying them here is what lets a custom
+	// policy use roles, tenants or scopes without re-parsing the token on
+	// every frame. Nil when the verifier has no claims to offer.
+	Claims map[string]any
 }
 
 // Verifier inspects an HTTP upgrade request and either authorizes it or
@@ -103,7 +109,7 @@ func NewJWT(cfg JWTConfig, log *slog.Logger) Verifier {
 			log.Warn("userKey query does not match jwt sub", "sub", sub, "userKey", uk)
 			return nil, ErrUnauthorized
 		}
-		res := &Result{UserKey: sub}
+		res := &Result{UserKey: sub, Claims: map[string]any(claims)}
 		// jwt/v5 has already rejected an expired token; what we want here
 		// is the deadline so the socket can be closed when it arrives.
 		if exp, err := claims.GetExpirationTime(); err == nil && exp != nil {

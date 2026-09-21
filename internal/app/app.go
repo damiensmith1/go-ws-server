@@ -20,6 +20,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/damiensmith1/go-ws-server/internal/auth"
+	"github.com/damiensmith1/go-ws-server/internal/authz"
 	"github.com/damiensmith1/go-ws-server/internal/bus"
 	"github.com/damiensmith1/go-ws-server/internal/config"
 	"github.com/damiensmith1/go-ws-server/internal/connection"
@@ -165,6 +166,21 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		}, log)
 	}
 
+	rules, err := authz.ParseRules(cfg.AuthzRules)
+	if err != nil {
+		rdb.Close()
+		pub.Close()
+		sub.Close()
+		return nil, err
+	}
+	var authorizer authz.Authorizer
+	if rules == nil {
+		log.Warn("AUTHZ_RULES is not set — every authenticated client can subscribe to, publish to and lock every topic. Set it before serving more than one tenant.")
+		authorizer = authz.AllowAll()
+	} else {
+		authorizer = rules
+	}
+
 	hub := connection.NewHub(log)
 
 	busInst := bus.New(pub, sub, hub, bus.Config{
@@ -188,6 +204,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		MessageRateLimit: ratelimit.DefaultMessageConfig(cfg.RateLimitMessagesPerSec),
 		JobRateLimit:     ratelimit.DefaultJobConfig(cfg.RateLimitJobsPerMin),
 		OnSchedulerWake:  sched.Wake,
+		Authorizer:       authorizer,
 		Metrics:          m,
 	}
 
@@ -390,6 +407,7 @@ func serveWS(
 		SendChanCapacity: 128,
 		WriteWait:        10 * time.Second,
 		ExpiresAt:        res.ExpiresAt,
+		Claims:           res.Claims,
 		Metrics:          deps.Metrics,
 	}, log)
 

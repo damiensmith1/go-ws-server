@@ -46,6 +46,11 @@ type Config struct {
 	TLSKeyPath  string
 	TLSCertPath string
 
+	// AuthzRules is the raw AUTHZ_RULES JSON, parsed by authz.ParseRules.
+	// Empty means no per-topic policy: every authenticated client may act
+	// on every topic.
+	AuthzRules string
+
 	AuthJWTSecret   string
 	AuthJWTAudience string
 	AuthJWTIssuer   string
@@ -95,6 +100,8 @@ func Load() (*Config, error) {
 
 		TLSKeyPath:  os.Getenv("TLS_KEY_PATH"),
 		TLSCertPath: os.Getenv("TLS_CERT_PATH"),
+
+		AuthzRules: getenv("AUTHZ_RULES", ""),
 
 		LogLevel:   getenv("LOG_LEVEL", "info"),
 		InstanceID: getenv("INSTANCE_ID", uuid.NewString()),

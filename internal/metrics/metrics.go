@@ -76,6 +76,7 @@ type Metrics struct {
 	RedisErrors   *prometheus.CounterVec   // command
 
 	RateLimitDecisions *prometheus.CounterVec // bucket, decision
+	AuthzDecisions     *prometheus.CounterVec // action, decision
 
 	SchedulerExecuted   *prometheus.CounterVec // result
 	SchedulerDuration   prometheus.Histogram
@@ -138,6 +139,12 @@ func New() *Metrics {
 
 		RateLimitDecisions: f.counterVec("ratelimit_decisions_total",
 			"Rate-limit checks by bucket and outcome.", "bucket", "decision"),
+
+		// "error" is a separate outcome from "denied" on purpose: a spike
+		// in denials is a client or policy problem, a spike in errors is
+		// an outage in whatever backs the Authorizer.
+		AuthzDecisions: f.counterVec("authz_decisions_total",
+			"Per-topic authorization checks by action and outcome.", "action", "decision"),
 
 		SchedulerExecuted: f.counterVec("scheduler_jobs_executed_total",
 			"Scheduled jobs run by outcome.", "result"),

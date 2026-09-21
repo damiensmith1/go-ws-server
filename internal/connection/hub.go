@@ -122,6 +122,7 @@ type Conn struct {
 	m           *metrics.Metrics
 	openedAt    time.Time
 	expiresAt   time.Time
+	claims      map[string]any
 	closeReason string // written once, inside closeOnce
 	readErr     bool   // set by runReader before it returns; read after
 }
@@ -136,6 +137,10 @@ type ConnConfig struct {
 	// ExpiresAt is the credential deadline from auth.Result. Zero means the
 	// credential does not expire and no deadline watcher is started.
 	ExpiresAt time.Time
+
+	// Claims are the credential's claims from auth.Result, carried so an
+	// authz.Authorizer can read them per frame.
+	Claims map[string]any
 
 	// Metrics is optional. A nil value gets a private collector set, so
 	// call sites never need a nil check.
@@ -165,6 +170,7 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 		m:         cfg.Metrics,
 		openedAt:  time.Now(),
 		expiresAt: cfg.ExpiresAt,
+		claims:    cfg.Claims,
 		ws:        ws,
 		userKey:   cfg.UserKey,
 		log:       log.With("userKey", cfg.UserKey),
@@ -178,6 +184,11 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 
 // UserKey returns the authenticated identity for this connection.
 func (c *Conn) UserKey() string { return c.userKey }
+
+// Claims returns the credential claims this connection was authorized
+// with, or nil. The map is shared, not copied: callers must treat it as
+// read-only.
+func (c *Conn) Claims() map[string]any { return c.claims }
 
 // Send enqueues a text frame. Non-blocking: on full queue or
 // over-threshold buffered bytes the message is dropped with a warn log.
