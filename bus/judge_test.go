@@ -287,7 +287,7 @@ func TestJudgedPublishFiltersFanout(t *testing.T) {
 	// Give the PSUBSCRIBE a beat to land, as the other Run-based test does.
 	time.Sleep(50 * time.Millisecond)
 
-	if _, err := b.PublishTopic(ctx, "alerts", json.RawMessage(`{"sev":"warn"}`)); err != nil {
+	if _, err := b.PublishTopic(ctx, "alerts", json.RawMessage(`{"sev":"warn"}`), ""); err != nil {
 		t.Fatalf("PublishTopic: %v", err)
 	}
 

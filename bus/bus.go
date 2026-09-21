@@ -44,6 +44,7 @@ import (
 const (
 	topicChannelPrefix     = "ws:topic:"
 	broadcastChannelPrefix = "ws:broadcast:"
+	reportChannelPrefix    = "ws:report:"
 	streamKeyPrefix        = "topic:stream:"
 )
 
@@ -55,15 +56,21 @@ type Subscriber interface {
 }
 
 // BroadcastTarget is implemented by the connection hub. The bus calls it
-// to deliver per-userKey broadcast frames to every socket for that user.
+// to deliver per-userKey broadcast frames to every socket for that user,
+// and per-connection delivery reports back to the publishing socket.
 type BroadcastTarget interface {
 	SendToUser(userKey string, msg []byte)
+	SendToConn(connID string, msg []byte)
 }
 
 // Config configures the bus.
 type Config struct {
 	StreamMaxLength int64
 	StreamTTL       time.Duration
+
+	// InstanceID names this instance in delivery reports, so a publisher
+	// can tell one instance's partial report from another's.
+	InstanceID string
 
 	// Judge replaces exact-topic fan-out with a per-message routing
 	// decision. Nil keeps exact-topic match. It requires Candidates; a
@@ -153,7 +160,8 @@ func New(pub, sub redis.UniversalClient, target BroadcastTarget, cfg Config, log
 // Run starts the pub/sub listener and (if configured) the periodic stream
 // trim. It returns when ctx is cancelled.
 func (b *Bus) Run(ctx context.Context) error {
-	b.pubsub = b.sub.PSubscribe(ctx, topicChannelPrefix+"*", broadcastChannelPrefix+"*")
+	b.pubsub = b.sub.PSubscribe(ctx,
+		topicChannelPrefix+"*", broadcastChannelPrefix+"*", reportChannelPrefix+"*")
 
 	if err := b.pubsub.Ping(ctx); err != nil {
 		return fmt.Errorf("psubscribe ping: %w", err)
@@ -204,12 +212,20 @@ func (b *Bus) dispatch(msg *redis.Message) {
 	case strings.HasPrefix(msg.Channel, broadcastChannelPrefix):
 		userKey := msg.Channel[len(broadcastChannelPrefix):]
 		b.handleBroadcast(userKey, msg.Payload)
+	case strings.HasPrefix(msg.Channel, reportChannelPrefix):
+		connID := msg.Channel[len(reportChannelPrefix):]
+		b.handleReport(connID, msg.Payload)
 	}
 }
 
 type wireTopicPayload struct {
 	StreamID string          `json:"streamId"`
 	Data     json.RawMessage `json:"data"`
+
+	// ReportTo is the connection ID of the publishing socket, set only
+	// when that publish asked for a delivery report. Empty is the normal
+	// case and costs nothing.
+	ReportTo string `json:"reportTo,omitempty"`
 
 	// Recipients is the subscriber ID allowlist decided by a Judge at
 	// publish time. Nil means "every subscriber of this topic", which is
@@ -275,9 +291,91 @@ func (b *Bus) handleTopic(topic, payload string) {
 	// Encode once and share the frame across subscribers: Send only
 	// enqueues the slice and the writer goroutine never mutates it.
 	frame := protocol.EncodePublish(topic, p.Data, p.StreamID, false)
+	delivered, dropped := 0, 0
 	for _, sub := range deliver {
+		// Only ask for the outcome when someone is listening for it:
+		// DropReporter is an extra interface assertion per subscriber.
+		if p.ReportTo != "" {
+			if dr, ok := sub.(DropReporter); ok {
+				if dr.SendReporting(frame) {
+					delivered++
+				} else {
+					dropped++
+				}
+				continue
+			}
+		}
 		sub.Send(frame)
+		delivered++
 	}
+
+	if p.ReportTo != "" {
+		b.sendReport(topic, p, delivered, dropped, filtered)
+	}
+}
+
+// DropReporter is implemented by subscribers that can say whether a send
+// was queued or dropped. A Subscriber without it is counted as delivered,
+// since there is no way to know otherwise and guessing "dropped" would
+// make reports wrong for every existing implementation.
+type DropReporter interface {
+	Subscriber
+
+	// SendReporting enqueues a frame and reports whether it was accepted.
+	SendReporting(msg []byte) bool
+}
+
+// sendReport publishes one instance's share of a delivery outcome back to
+// the publishing socket.
+//
+// Each instance reports only what it saw. The publisher therefore
+// receives one report per instance that had subscribers, not one
+// aggregate — aggregating would mean knowing how many instances are live
+// and waiting for all of them, which turns a publish into a distributed
+// barrier. Partial reports that arrive promptly are more useful than a
+// total that may never come.
+func (b *Bus) sendReport(topic string, p wireTopicPayload, delivered, dropped, filtered int) {
+	if b.pub == nil {
+		return
+	}
+	payload, err := json.Marshal(wireReportPayload{
+		Topic:     topic,
+		StreamID:  p.StreamID,
+		Delivered: delivered,
+		Dropped:   dropped,
+		Filtered:  filtered,
+		Instance:  b.cfg.InstanceID,
+	})
+	if err != nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	if err := b.pub.Publish(ctx, reportChannelPrefix+p.ReportTo, payload).Err(); err != nil {
+		b.log.Warn("publish delivery report failed", "topic", topic, "err", err.Error())
+	}
+}
+
+type wireReportPayload struct {
+	Topic     string `json:"topic"`
+	StreamID  string `json:"streamId"`
+	Delivered int    `json:"delivered"`
+	Dropped   int    `json:"dropped"`
+	Filtered  int    `json:"filtered"`
+	Instance  string `json:"instance"`
+}
+
+func (b *Bus) handleReport(connID, payload string) {
+	if b.broadcast == nil {
+		return
+	}
+	var r wireReportPayload
+	if err := json.Unmarshal([]byte(payload), &r); err != nil {
+		b.log.Error("invalid delivery report", "connID", connID, "err", err.Error())
+		return
+	}
+	b.broadcast.SendToConn(connID, protocol.EncodeDeliveryReport(
+		r.Topic, r.StreamID, r.Instance, r.Delivered, r.Dropped, r.Filtered))
 }
 
 type wireBroadcastPayload struct {
@@ -314,7 +412,13 @@ func (b *Bus) handleBroadcast(userKey, payload string) {
 
 // PublishTopic appends to the topic stream and announces via pub/sub.
 // Returns the stream ID assigned by Redis.
-func (b *Bus) PublishTopic(ctx context.Context, topic string, data json.RawMessage) (string, error) {
+// PublishTopic appends a message to the topic's stream and announces it.
+//
+// reportTo, when non-empty, is the connection ID of the publishing socket
+// and asks every instance that fans this message out to report what it
+// delivered and dropped. Empty is the normal case and adds nothing to the
+// payload or the pub/sub traffic.
+func (b *Bus) PublishTopic(ctx context.Context, topic string, data json.RawMessage, reportTo string) (string, error) {
 	streamKey := streamKeyPrefix + topic
 	dataJSON := []byte(data)
 	if len(dataJSON) == 0 {
@@ -337,7 +441,9 @@ func (b *Bus) PublishTopic(ctx context.Context, topic string, data json.RawMessa
 		return "", fmt.Errorf("xadd: %w", err)
 	}
 
-	announce, _ := json.Marshal(wireTopicPayload{StreamID: streamID, Data: data, Recipients: recipients})
+	announce, _ := json.Marshal(wireTopicPayload{
+		StreamID: streamID, Data: data, Recipients: recipients, ReportTo: reportTo,
+	})
 	if err := b.pub.Publish(ctx, topicChannelPrefix+topic, announce).Err(); err != nil {
 		return "", fmt.Errorf("publish topic: %w", err)
 	}

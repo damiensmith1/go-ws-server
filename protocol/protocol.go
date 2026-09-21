@@ -67,6 +67,7 @@ const (
 	OutBroadcastMsg    = "message"
 	OutPresence        = "presence"
 	OutSubscriptions   = "subscriptions"
+	OutDeliveryReport  = "deliveryReport"
 )
 
 // Envelope is the union shape every inbound JSON message conforms to.
@@ -81,6 +82,11 @@ type Envelope struct {
 	LockType string          `json:"lockType,omitempty"`
 	Since    json.RawMessage `json:"since,omitempty"`
 	ReqID    string          `json:"reqID,omitempty"`
+
+	// Report asks for delivery reports on a publish frame. Off by
+	// default: reports cost an extra pub/sub message per instance that
+	// fans the message out.
+	Report bool `json:"report,omitempty"`
 
 	// StreamID is the position being acknowledged by an ack frame.
 	StreamID string `json:"streamId,omitempty"`
@@ -389,6 +395,35 @@ func EncodeSubscriptions(reqID string, topics []string) []byte {
 		Type:   OutSubscriptions,
 		ReqID:  reqID,
 		Topics: topics,
+	})
+	return b
+}
+
+type deliveryReportFrame struct {
+	Type      string `json:"type"`
+	Topic     string `json:"topic"`
+	StreamID  string `json:"streamId"`
+	Instance  string `json:"instance"`
+	Delivered int    `json:"delivered"`
+	Dropped   int    `json:"dropped"`
+	Filtered  int    `json:"filtered"`
+}
+
+// EncodeDeliveryReport reports one instance's share of a publish's
+// fan-out outcome back to the publisher.
+//
+// It carries the instance ID because each instance reports only what it
+// saw: a publisher receives one report per instance with subscribers,
+// not a single aggregate.
+func EncodeDeliveryReport(topic, streamID, instance string, delivered, dropped, filtered int) []byte {
+	b, _ := json.Marshal(deliveryReportFrame{
+		Type:      OutDeliveryReport,
+		Topic:     topic,
+		StreamID:  streamID,
+		Instance:  instance,
+		Delivered: delivered,
+		Dropped:   dropped,
+		Filtered:  filtered,
 	})
 	return b
 }

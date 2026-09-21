@@ -78,6 +78,33 @@ func (h *Hub) SendToUser(userKey string, msg []byte) {
 	}
 }
 
+// SendToConn delivers a frame to one specific socket, used for delivery
+// reports addressed to the publishing connection rather than the user.
+//
+// The hub is indexed by userKey, so this scans that user's sockets — but
+// a connID is not a userKey, so it scans all of them. That is acceptable
+// only because reports are opt-in and rare; making it cheap would mean a
+// second index maintained on every connect and disconnect.
+func (h *Hub) SendToConn(connID string, msg []byte) {
+	h.mu.RLock()
+	var target *Conn
+	for _, conns := range h.users {
+		for _, c := range conns {
+			if c.id == connID {
+				target = c
+				break
+			}
+		}
+		if target != nil {
+			break
+		}
+	}
+	h.mu.RUnlock()
+	if target != nil {
+		target.Send(msg)
+	}
+}
+
 // Snapshot returns a slice of every active connection, useful for graceful
 // shutdown.
 // WaitDrained waits for every connection in the hub to flush its send
@@ -278,10 +305,15 @@ func (c *Conn) Claims() map[string]any { return c.claims }
 // Send enqueues a text frame. Non-blocking: on full queue or
 // over-threshold buffered bytes the message is dropped with a warn log.
 // This is the policy that keeps one slow client from stalling the bus.
-func (c *Conn) Send(msg []byte) {
+func (c *Conn) Send(msg []byte) { _ = c.SendReporting(msg) }
+
+// SendReporting is Send, reporting whether the frame was queued. It is
+// what makes a delivery report able to distinguish delivered from
+// dropped; Send discards the answer.
+func (c *Conn) SendReporting(msg []byte) bool {
 	select {
 	case <-c.closed:
-		return
+		return false
 	default:
 	}
 	n := int64(len(msg))
@@ -291,18 +323,20 @@ func (c *Conn) Send(msg []byte) {
 			"messageBytes", n,
 		)
 		c.recordDrop(metrics.DropBufferThreshold)
-		return
+		return false
 	}
 	select {
 	case c.sendCh <- outFrame{kind: frameText, payload: msg}:
 		c.bufBytes.Add(n)
 		c.m.FramesSent.Inc()
 		c.consecDrops.Store(0)
+		return true
 	case <-c.closed:
-		return
+		return false
 	default:
 		c.log.Warn("dropping message: send chan full")
 		c.recordDrop(metrics.DropChannelFull)
+		return false
 	}
 }
 

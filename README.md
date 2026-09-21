@@ -445,6 +445,38 @@ subscribe may not enumerate subscribers either.
 Subscribers are userKeys, deduplicated across sockets — a user with three
 connections to the topic appears once.
 
+### Delivery reports
+
+A publisher normally learns nothing about what happened to its message.
+Set `report` on a publish to find out:
+
+```json
+{ "type": "publish", "topic": "chat", "data": {"x":1}, "report": true }
+```
+
+```json
+{ "type": "deliveryReport", "topic": "chat", "streamId": "1699999999999-0",
+  "instance": "7f3a…", "delivered": 812, "dropped": 3, "filtered": 0 }
+```
+
+`dropped` counts subscribers whose send queue refused the frame;
+`filtered` counts subscribers a `bus.Judge` excluded. They are separate
+because they mean opposite things — a drop is a problem, a filter is the
+routing policy working.
+
+**You get one report per instance, not one total.** Each instance reports
+only what it fanned out, which is why the frame carries `instance`.
+Aggregating would mean knowing how many instances are live and waiting
+for all of them, turning every reported publish into a distributed
+barrier; partial reports that arrive promptly are more useful than a
+total that may never come.
+
+Off by default: a report costs an extra pub/sub message per instance that
+fans the message out. A `Subscriber` that predates this feature is
+counted as delivered, since there is no way for it to say otherwise and
+guessing "dropped" would make reports wrong for every existing
+implementation.
+
 ### Acknowledgements
 
 Delivery is fire-and-forget by default. A client that wants at-least-once

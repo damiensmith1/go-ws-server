@@ -347,7 +347,13 @@ func handlePublish(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps)
 	if locked {
 		return "", fmt.Errorf("Topic %s is locked for publishing by another instance.", env.Topic)
 	}
-	if _, err := d.Bus.PublishTopic(ctx, env.Topic, env.Data); err != nil {
+	// Reports are opt-in: they cost one extra pub/sub message per
+	// instance that fans the message out.
+	reportTo := ""
+	if env.Report {
+		reportTo = c.SubscriberID()
+	}
+	if _, err := d.Bus.PublishTopic(ctx, env.Topic, env.Data, reportTo); err != nil {
 		return "", err
 	}
 	return fmt.Sprintf("Successfully published to topic %s", env.Topic), nil
@@ -496,7 +502,7 @@ func PublishPresence(ctx context.Context, userKey, event string, d Deps) {
 	if err != nil {
 		return
 	}
-	if _, err := d.Bus.PublishTopic(ctx, d.PresenceTopic, payload); err != nil {
+	if _, err := d.Bus.PublishTopic(ctx, d.PresenceTopic, payload, ""); err != nil {
 		d.logger().Warn("publish presence event failed",
 			"event", event, "userKey", userKey, "topic", d.PresenceTopic, "err", err.Error())
 	}

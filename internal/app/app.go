@@ -216,6 +216,7 @@ func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 	busInst := bus.New(pub, sub, hub, bus.Config{
 		StreamMaxLength:    cfg.StreamMaxLength,
 		StreamTTL:          cfg.StreamTTL,
+		InstanceID:         cfg.InstanceID,
 		Judge:              ext.Judge,
 		Candidates:         ext.Candidates,
 		JudgeTimeout:       ext.JudgeTimeout,

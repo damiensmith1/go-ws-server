@@ -43,6 +43,8 @@ func (f *fakeSub) Snapshot() [][]byte {
 
 type fakeBroadcast struct{}
 
+func (fakeBroadcast) SendToConn(string, []byte) {}
+
 func (fakeBroadcast) SendToUser(userKey string, msg []byte) {}
 
 func newBus(t *testing.T) (*Bus, *miniredis.Miniredis) {
@@ -64,7 +66,7 @@ func newBus(t *testing.T) (*Bus, *miniredis.Miniredis) {
 
 func TestPublishTopic_AddsToStream(t *testing.T) {
 	b, _ := newBus(t)
-	id, err := b.PublishTopic(context.Background(), "chat", json.RawMessage(`{"x":1}`))
+	id, err := b.PublishTopic(context.Background(), "chat", json.RawMessage(`{"x":1}`), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -77,8 +79,8 @@ func TestSubscribeWithReplay_DrainsHistory(t *testing.T) {
 	b, _ := newBus(t)
 	ctx := context.Background()
 
-	id1, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":1}`))
-	id2, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":2}`))
+	id1, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":1}`), "")
+	id2, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":2}`), "")
 	_ = id1
 
 	sub := &fakeSub{}
@@ -119,8 +121,8 @@ func TestSubscribeWithReplay_SinceCursorExclusive(t *testing.T) {
 	b, _ := newBus(t)
 	ctx := context.Background()
 
-	id1, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":1}`))
-	id2, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":2}`))
+	id1, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":1}`), "")
+	id2, _ := b.PublishTopic(ctx, "chat", json.RawMessage(`{"n":2}`), "")
 
 	sub := &fakeSub{}
 	if _, _, err := b.SubscribeWithReplay(ctx, sub, "chat", id1); err != nil {
