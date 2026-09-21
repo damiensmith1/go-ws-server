@@ -14,6 +14,7 @@ import (
 	"github.com/damiensmith1/go-ws-server/bus"
 	"github.com/damiensmith1/go-ws-server/handler"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
+	"github.com/damiensmith1/go-ws-server/internal/redisx"
 	"github.com/damiensmith1/go-ws-server/metrics"
 	"github.com/damiensmith1/go-ws-server/protocol"
 )
@@ -441,4 +442,85 @@ func TestDispatchMiddleware(t *testing.T) {
 			t.Fatalf("ConnID = %q, want the connection's id", got.ConnID)
 		}
 	})
+}
+
+// The point of server-side cursors: a client that reconnects with
+// since:"ack" resumes where it left off without having to remember a
+// stream ID across restarts.
+func TestDispatchAckCursor(t *testing.T) {
+	h := newHarness(t)
+
+	h.send(`{"type":"subscribe","topic":"chat"}`)
+	for i := 0; i < 3; i++ {
+		got := h.only(h.send(`{"type":"publish","topic":"chat","data":{"n":1}}`))
+		if got["type"] != protocol.OutSuccess {
+			t.Fatalf("publish failed: %v", got)
+		}
+	}
+
+	// Find a real stream ID to acknowledge.
+	ids, err := h.deps.RDB.XRange(context.Background(), "topic:stream:chat", "-", "+").Result()
+	if err != nil || len(ids) < 3 {
+		t.Fatalf("XRange: %v (%d entries)", err, len(ids))
+	}
+	first := ids[0].ID
+
+	got := h.only(h.send(`{"type":"ack","topic":"chat","streamId":"` + first + `","reqID":"a1"}`))
+	if got["type"] != protocol.OutSuccess {
+		t.Fatalf("ack failed: %v", got)
+	}
+
+	stored, err := redisx.AckCursor(context.Background(), h.deps.RDB, "alice", "chat")
+	if err != nil {
+		t.Fatalf("AckCursor: %v", err)
+	}
+	if stored != first {
+		t.Fatalf("cursor = %q, want %q", stored, first)
+	}
+
+	// Resubscribing with since:"ack" must replay only what follows the
+	// cursor: two of the three messages.
+	h.send(`{"type":"unsubscribe","topic":"chat"}`)
+	frames := h.send(`{"type":"subscribe","topic":"chat","since":"ack","reqID":"s2"}`)
+
+	var replayed int
+	for _, f := range frames {
+		if f["type"] == protocol.OutPublishDelivery {
+			replayed++
+		}
+	}
+	if replayed != 2 {
+		t.Fatalf("replayed %d messages, want 2 (everything after the acked one)", replayed)
+	}
+}
+
+// With nothing acked there is no cursor, and since:"ack" must behave like
+// a plain subscribe rather than replaying the whole stream or erroring.
+func TestDispatchAckWithNoCursor(t *testing.T) {
+	h := newHarness(t)
+	h.send(`{"type":"publish","topic":"chat","data":{"n":1}}`)
+
+	frames := h.send(`{"type":"subscribe","topic":"chat","since":"ack","reqID":"s1"}`)
+	for _, f := range frames {
+		if f["type"] == protocol.OutPublishDelivery {
+			t.Fatalf("an unacked subscriber was sent history: %v", f)
+		}
+	}
+	if len(frames) != 1 || frames[0]["type"] != protocol.OutSuccess {
+		t.Fatalf("frames = %v, want a single success", frames)
+	}
+}
+
+func TestDispatchAckValidation(t *testing.T) {
+	h := newHarness(t)
+	for _, bad := range []string{
+		`{"type":"ack","streamId":"1-0"}`,
+		`{"type":"ack","topic":"chat"}`,
+		`{"type":"ack"}`,
+	} {
+		got := h.only(h.send(bad))
+		if got["type"] != protocol.OutError {
+			t.Fatalf("%s was accepted: %v", bad, got)
+		}
+	}
 }

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	"github.com/alicebob/miniredis/v2"
 	"github.com/redis/go-redis/v9"
@@ -107,5 +108,74 @@ func TestIsTopicLockedByOther(t *testing.T) {
 	other, _ = IsTopicLockedByOther(ctx, c, "chat", LockPublish, "bob")
 	if !other {
 		t.Fatal("bob should see lock as held by other")
+	}
+}
+
+func TestAckCursor(t *testing.T) {
+	mr := miniredis.RunT(t)
+	c := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { c.Close() })
+	ctx := context.Background()
+
+	t.Run("absent cursor is empty, not an error", func(t *testing.T) {
+		got, err := AckCursor(ctx, c, "alice", "chat")
+		if err != nil {
+			t.Fatalf("AckCursor: %v", err)
+		}
+		if got != "" {
+			t.Fatalf("cursor = %q, want empty", got)
+		}
+	})
+
+	t.Run("round trips", func(t *testing.T) {
+		if err := SetAckCursor(ctx, c, "alice", "chat", "100-0", time.Hour); err != nil {
+			t.Fatalf("SetAckCursor: %v", err)
+		}
+		got, _ := AckCursor(ctx, c, "alice", "chat")
+		if got != "100-0" {
+			t.Fatalf("cursor = %q, want 100-0", got)
+		}
+	})
+
+	// Redelivery means a client can legitimately re-ack something it has
+	// already acked. Rewinding would replay everything after it again.
+	t.Run("does not move backwards", func(t *testing.T) {
+		_ = SetAckCursor(ctx, c, "bob", "chat", "500-0", time.Hour)
+		_ = SetAckCursor(ctx, c, "bob", "chat", "200-0", time.Hour)
+		got, _ := AckCursor(ctx, c, "bob", "chat")
+		if got != "500-0" {
+			t.Fatalf("cursor = %q, want it to stay at 500-0", got)
+		}
+	})
+
+	t.Run("cursors are per topic", func(t *testing.T) {
+		_ = SetAckCursor(ctx, c, "carol", "a", "1-0", time.Hour)
+		_ = SetAckCursor(ctx, c, "carol", "b", "2-0", time.Hour)
+		a, _ := AckCursor(ctx, c, "carol", "a")
+		b, _ := AckCursor(ctx, c, "carol", "b")
+		if a != "1-0" || b != "2-0" {
+			t.Fatalf("cursors bled between topics: a=%q b=%q", a, b)
+		}
+	})
+}
+
+// Lexicographic comparison would put "10-0" before "9-0" and treat a
+// newer cursor as older, replaying history the client already saw.
+func TestStreamIDLess(t *testing.T) {
+	tests := []struct {
+		a, b string
+		want bool
+	}{
+		{"9-0", "10-0", true},
+		{"10-0", "9-0", false},
+		{"100-0", "100-1", true},
+		{"100-1", "100-0", false},
+		{"100-0", "100-0", false},
+		{"1699999999999-0", "1700000000000-0", true},
+	}
+	for _, tc := range tests {
+		if got := StreamIDLess(tc.a, tc.b); got != tc.want {
+			t.Errorf("StreamIDLess(%q, %q) = %v, want %v", tc.a, tc.b, got, tc.want)
+		}
 	}
 }

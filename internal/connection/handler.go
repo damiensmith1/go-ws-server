@@ -44,6 +44,10 @@ type Deps struct {
 	// element is outermost.
 	Middleware []handler.Middleware
 
+	// AckCursorTTL expires stored ack cursors. Zero keeps them forever,
+	// which leaks a key per userKey per topic.
+	AckCursorTTL time.Duration
+
 	// PresenceTopic receives connect and disconnect events for the first
 	// and last socket of each userKey. Empty disables the feed, which is
 	// the default: publishing user activity to a topic anyone might
@@ -86,6 +90,7 @@ var knownFrameTypes = map[string]struct{}{
 	protocol.TypeBroadcast:   {},
 	protocol.TypePresence:    {},
 	protocol.TypeListSubs:    {},
+	protocol.TypeAck:         {},
 }
 
 // frameTypeLabel bounds the `type` label to verbs the server knows,
@@ -254,6 +259,8 @@ func route(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string
 		return handleScheduleJob(ctx, c, env, d)
 	case protocol.TypeRemoveJob:
 		return handleRemoveJob(ctx, c, env, d)
+	case protocol.TypeAck:
+		return handleAck(ctx, c, env, d)
 	case protocol.TypePresence:
 		_, err := handlePresence(ctx, c, env, d)
 		return "", err
@@ -288,6 +295,20 @@ func handleSubscribe(ctx context.Context, c *Conn, env *protocol.Envelope, d Dep
 		since, err := protocol.SinceToString(env.Since)
 		if err != nil {
 			return "", err
+		}
+		if since == protocol.SinceAck {
+			// Resume where this user last acknowledged. An empty cursor
+			// means nothing has been acked, so there is nothing to replay
+			// and this behaves like a plain subscribe.
+			cursor, err := redisx.AckCursor(ctx, d.RDB, c.UserKey(), env.Topic)
+			if err != nil {
+				return "", err
+			}
+			if cursor == "" {
+				d.Bus.AddLocalSubscription(env.Topic, c)
+				return fmt.Sprintf("Successfully subscribed to topic %s", env.Topic), nil
+			}
+			since = cursor
 		}
 		truncated, oldest, err := d.Bus.SubscribeWithReplay(ctx, c, env.Topic, since)
 		if err != nil {
@@ -393,6 +414,21 @@ func handleRemoveJob(ctx context.Context, c *Conn, env *protocol.Envelope, d Dep
 		return "", err
 	}
 	return fmt.Sprintf("Successfully removed job %s", env.JobID), nil
+}
+
+// handleAck records how far this client has processed a topic.
+//
+// Gated as a read of the topic: the cursor controls what the client will
+// be sent on its next subscribe, so writing it is part of reading the
+// topic, not a separate privilege.
+func handleAck(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
+	if err := authorize(ctx, c, authz.ActionSubscribe, env.Topic, d); err != nil {
+		return "", err
+	}
+	if err := redisx.SetAckCursor(ctx, d.RDB, c.UserKey(), env.Topic, env.StreamID, d.AckCursorTTL); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("Acknowledged %s on topic %s", env.StreamID, env.Topic), nil
 }
 
 // handlePresence reports who is subscribed to a topic.

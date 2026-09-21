@@ -7,6 +7,8 @@ package redisx
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/redis/go-redis/v9"
@@ -100,6 +102,70 @@ func RemoveTopicSubscription(ctx context.Context, c redis.UniversalClient, userK
 		return fmt.Errorf("srem subscribedTopics: %w", err)
 	}
 	return nil
+}
+
+// ackCursorKey is per userKey and topic, not per connection: a user's
+// reading position should survive the socket that established it, which
+// is the entire point of storing it server side.
+func ackCursorKey(userKey, topic string) string {
+	return "ack:" + userKey + ":" + topic
+}
+
+// SetAckCursor records how far a userKey has acknowledged a topic.
+//
+// Cursors move forward only. Redelivery means a client can legitimately
+// ack a stream ID it has already acked, and an out-of-order ack must not
+// rewind the cursor and replay everything after it again.
+func SetAckCursor(ctx context.Context, c redis.UniversalClient, userKey, topic, streamID string, ttl time.Duration) error {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	key := ackCursorKey(userKey, topic)
+	current, err := c.Get(ctx, key).Result()
+	if err != nil && err != redis.Nil {
+		return fmt.Errorf("get ack cursor: %w", err)
+	}
+	if current != "" && !StreamIDLess(current, streamID) {
+		return nil
+	}
+	if err := c.Set(ctx, key, streamID, ttl).Err(); err != nil {
+		return fmt.Errorf("set ack cursor: %w", err)
+	}
+	return nil
+}
+
+// AckCursor returns the last acknowledged stream ID for a userKey and
+// topic, or "" if there is none.
+func AckCursor(ctx context.Context, c redis.UniversalClient, userKey, topic string) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, 2*time.Second)
+	defer cancel()
+
+	v, err := c.Get(ctx, ackCursorKey(userKey, topic)).Result()
+	if err == redis.Nil {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("get ack cursor: %w", err)
+	}
+	return v, nil
+}
+
+// StreamIDLess compares two Redis stream IDs of the form "<ms>-<seq>".
+//
+// Lexicographic comparison is wrong here: "10-0" sorts before "9-0" as a
+// string, so a naive compare would treat a newer cursor as older and
+// replay history the client has already seen.
+func StreamIDLess(a, b string) bool {
+	amsStr, aseqStr, _ := strings.Cut(a, "-")
+	bmsStr, bseqStr, _ := strings.Cut(b, "-")
+	ams, _ := strconv.ParseInt(amsStr, 10, 64)
+	bms, _ := strconv.ParseInt(bmsStr, 10, 64)
+	if ams != bms {
+		return ams < bms
+	}
+	aseq, _ := strconv.ParseInt(aseqStr, 10, 64)
+	bseq, _ := strconv.ParseInt(bseqStr, 10, 64)
+	return aseq < bseq
 }
 
 // TopicSubscribers returns every userKey currently subscribed to a topic,

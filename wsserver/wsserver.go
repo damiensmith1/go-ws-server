@@ -154,6 +154,10 @@ type Options struct {
 	// StreamTTL expires idle replay streams. Zero keeps them indefinitely.
 	StreamTTL time.Duration
 
+	// AckCursorTTL expires stored ack cursors. Zero uses 7 days. It should
+	// exceed your longest expected client absence.
+	AckCursorTTL time.Duration
+
 	// MessagesPerSec and JobsPerMin are per-userKey rate limits. Zero uses
 	// 50 and 30 respectively.
 	MessagesPerSec int
@@ -208,6 +212,7 @@ func OptionsFromEnv() (Options, error) {
 		EnableCompression:     cfg.EnableCompression,
 		StreamMaxLength:       cfg.StreamMaxLength,
 		StreamTTL:             cfg.StreamTTL,
+		AckCursorTTL:          cfg.AckCursorTTL,
 		MessagesPerSec:        cfg.RateLimitMessagesPerSec,
 		JobsPerMin:            cfg.RateLimitJobsPerMin,
 		SchedulerAllowedHosts: cfg.SchedulerAllowedHosts,
@@ -339,6 +344,7 @@ func (o Options) toConfig() (*config.Config, error) {
 		EnableCompression:       o.EnableCompression,
 		StreamMaxLength:         orInt64(o.StreamMaxLength, 1000),
 		StreamTTL:               o.StreamTTL,
+		AckCursorTTL:            orDuration(o.AckCursorTTL, 7*24*time.Hour),
 		RateLimitMessagesPerSec: orInt(o.MessagesPerSec, 50),
 		RateLimitJobsPerMin:     orInt(o.JobsPerMin, 30),
 		SchedulerAllowedHosts:   o.SchedulerAllowedHosts,

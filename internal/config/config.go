@@ -71,6 +71,12 @@ type Config struct {
 	StreamMaxLength int64
 	StreamTTL       time.Duration
 
+	// AckCursorTTL expires stored ack cursors. Zero keeps them forever,
+	// which leaks a key per userKey per topic. It should comfortably
+	// exceed your longest expected client absence, or a returning client
+	// silently resumes from the top of the stream instead of its cursor.
+	AckCursorTTL time.Duration
+
 	RateLimitMessagesPerSec int
 	RateLimitJobsPerMin     int
 
@@ -166,6 +172,12 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.StreamTTL = time.Duration(streamTTLSec) * time.Second
+
+	ackTTLSec, err := getint64Or("ACK_CURSOR_TTL_SECONDS", int64((7 * 24 * time.Hour).Seconds()))
+	if err != nil {
+		return nil, err
+	}
+	cfg.AckCursorTTL = time.Duration(ackTTLSec) * time.Second
 
 	readyMs, err := getint64Or("READINESS_TIMEOUT_MS", int64(DefaultReadinessTimeout/time.Millisecond))
 	if err != nil {

@@ -42,7 +42,15 @@ const (
 	// that the server already maintained but never exposed.
 	TypePresence = "presence"
 	TypeListSubs = "listSubscriptions"
+
+	// TypeAck records how far a client has processed a topic, so the
+	// server can resume delivery there after a reconnect.
+	TypeAck = "ack"
 )
+
+// SinceAck asks subscribe to resume from the server-stored ack cursor
+// instead of a caller-supplied position.
+const SinceAck = "ack"
 
 // Lock kinds.
 const (
@@ -73,6 +81,9 @@ type Envelope struct {
 	LockType string          `json:"lockType,omitempty"`
 	Since    json.RawMessage `json:"since,omitempty"`
 	ReqID    string          `json:"reqID,omitempty"`
+
+	// StreamID is the position being acknowledged by an ack frame.
+	StreamID string `json:"streamId,omitempty"`
 
 	// Version is the wire-protocol version this frame is written against.
 	// A pointer so that absent is distinguishable from 0: absent means
@@ -181,6 +192,10 @@ func Validate(env *Envelope) error {
 	case TypePresence:
 		if env.Topic == "" {
 			return fmt.Errorf("Message of type %q must contain topic.", env.Type)
+		}
+	case TypeAck:
+		if env.Topic == "" || env.StreamID == "" {
+			return fmt.Errorf("Message of type %q must contain topic and streamId.", env.Type)
 		}
 	case TypeListSubs:
 		// No fields: a client can only ask about its own subscriptions.

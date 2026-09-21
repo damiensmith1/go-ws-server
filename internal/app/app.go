@@ -240,6 +240,7 @@ func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 		OnSchedulerWake:  sched.Wake,
 		Authorizer:       authorizer,
 		PresenceTopic:    cfg.PresenceTopic,
+		AckCursorTTL:     cfg.AckCursorTTL,
 		Registry:         ext.Registry,
 		Middleware:       ext.Middleware,
 		Metrics:          m,

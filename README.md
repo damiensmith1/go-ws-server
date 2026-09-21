@@ -207,6 +207,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `READINESS_TIMEOUT_MS`         | `2000`  | Timeout for the Redis ping behind `/readyz`.                      |
 | `AUTHZ_RULES`                  | —       | Per-topic authorization policy as JSON. Empty allows every topic to every authenticated client. |
 | `PRESENCE_TOPIC`               | —       | Topic for connect/disconnect events. Empty disables the feed.     |
+| `ACK_CURSOR_TTL_SECONDS`       | `604800` | Expiry for stored ack cursors (7 days).                          |
 | `SHUTDOWN_TIMEOUT_MS`          | `10000` | Bound on graceful shutdown, including flushing queued frames.     |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
@@ -443,6 +444,43 @@ subscribe may not enumerate subscribers either.
 
 Subscribers are userKeys, deduplicated across sockets — a user with three
 connections to the topic appears once.
+
+### Acknowledgements
+
+Delivery is fire-and-forget by default. A client that wants at-least-once
+delivery acknowledges what it has processed:
+
+```json
+{ "type": "ack", "topic": "chat", "streamId": "1699999999999-0" }
+```
+
+The `streamId` is the one carried on every delivered `publish` frame. The
+server stores the cursor per userKey and topic, and a later subscribe can
+resume from it:
+
+```json
+{ "type": "subscribe", "topic": "chat", "since": "ack" }
+```
+
+This is the difference from plain `since`: the client does not have to
+remember a position across restarts, and a user's reading position
+survives the socket that established it.
+
+Two properties worth knowing:
+
+**Cursors only move forward.** Redelivery means a client can legitimately
+re-ack something it has already acked, and an out-of-order ack must not
+rewind the cursor and replay everything after it again. Stream IDs are
+compared numerically, not lexicographically — `"10-0"` sorts before
+`"9-0"` as a string, which would treat a newer cursor as older.
+
+**With nothing acked, `since: "ack"` behaves like a plain subscribe.** It
+does not replay the whole stream, so a first-time subscriber is not
+flooded with history it never asked for.
+
+Cursors expire after `ACK_CURSOR_TTL_SECONDS` (default 7 days). Set it
+above your longest expected client absence: a returning client whose
+cursor has expired silently resumes from the top of the stream.
 
 ### Presence events
 
