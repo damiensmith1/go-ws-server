@@ -170,6 +170,31 @@ not server CPU — is the wall**, which is exactly what S2/S4 removes.
 Run `wsfanout` with your real payload size before deciding. The answer
 moves by an order of magnitude between a 10-byte and a 1 KB message.
 
+### Decision: not built
+
+Measured and closed rather than left open. The change is large — it
+replaces pattern subscription with per-topic subscription and brings
+three new failure modes with it:
+
+- **Subscribe races.** A client subscribes to a topic this instance has
+  never seen; the `SSUBSCRIBE` must land before the first publish or the
+  message is missed, with no pattern subscription as a safety net.
+  Wants a confirm-then-ack sequence on subscribe.
+- **Unsubscribe churn.** The last local subscriber leaves and the
+  instance must `SUNSUBSCRIBE`, but a new subscriber may arrive
+  immediately. Wants a grace period.
+- **Replay interaction.** The live-vs-replay buffering in `handleTopic`
+  assumes the instance is already receiving live messages when replay
+  begins. Per-topic subscription changes when that holds.
+
+Against that: the numbers above show server CPU is a non-issue, and
+Redis egress only becomes a wall at message rates and instance counts
+far beyond what this server is deployed at. Building it would be paying
+a large complexity cost for headroom nothing is consuming.
+
+The measurement is reproducible (`cmd/wsfanout`), so this is a decision
+that can be revisited against real numbers rather than re-argued.
+
 ## What this says about the scalability backlog
 
 - **Sharding `bus.mu` by topic hash is not justified yet.** The parallel
@@ -177,9 +202,13 @@ moves by an order of magnitude between a 10-byte and a 1 KB message.
   same shape (970ns against 1.23µs), so the global mutex is not the
   bottleneck at these numbers.
 - **The `PSUBSCRIBE ws:topic:*` ceiling** is measured by `cmd/wsfanout`,
-  documented above. Short version: server CPU is irrelevant, Redis
-  egress is the wall, and where that wall sits depends on your payload
-  size as much as your instance count.
+  documented above, and the decision is recorded there: not built.
+  Server CPU is irrelevant; Redis egress is the wall, and it sits far
+  beyond this server's scale.
+- **Sharding `bus.mu` by topic hash** is likewise not worth doing. The
+  parallel fan-out benchmark runs *faster* per operation than the serial
+  one at the same shape (970ns against 1.23us), so the global mutex is
+  not the bottleneck. If it were, the parallel case would be slower.
 
 ## Reproducing
 
