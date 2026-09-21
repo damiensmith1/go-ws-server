@@ -490,6 +490,23 @@ The server is stateless. Run as many instances as you like behind any TCP/HTTP l
 - Late subscribers `XRANGE` from their `since` cursor; the server dedupes the brief window where stream and pub/sub overlap.
 - Scheduled jobs are claimed atomically (`SET NX EX`), so any instance can run any job exactly once.
 
+## Log correlation
+
+Every log line written while serving a connection carries `connID` and
+`userKey`; lines written while handling a frame that supplied a `reqID`
+carry that too.
+
+```json
+{"level":"INFO","msg":"websocket client connected","connID":"6f2c…","userKey":"alice"}
+{"level":"ERROR","msg":"message handling failed","connID":"6f2c…","userKey":"alice","reqID":"r7","type":"publish"}
+```
+
+`connID` is per socket, not per user, which is the case that matters: a
+user with several tabs open cannot be told apart by `userKey` and
+timestamp alone. It is also the identifier a `bus.Judge` addresses a
+subscriber by, so a routing decision and the logs for the connection it
+applied to line up.
+
 ## Security notes
 
 - **Origin checks**: `gorilla/websocket`'s default `CheckOrigin` is same-origin. Browser clients on a different origin must go through a reverse proxy or you must override the upgrader's `CheckOrigin` in `main.go`. Don't blindly accept any origin in production.

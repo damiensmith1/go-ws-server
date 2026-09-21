@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/google/uuid"
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 
@@ -449,7 +450,20 @@ func serveWS(
 
 	keepAlive := r.URL.Query().Get("keepAlive") == "true"
 
+	// Every log line from this connection carries the same connID, so a
+	// connection's whole lifetime — upgrade, each frame, the close and
+	// its reason — can be pulled out of a shared log stream. Without it,
+	// correlating a client report against the server means guessing from
+	// timestamps and userKey, which fails exactly when it matters: a user
+	// with several sockets open.
+	connID := uuid.NewString()
+	log = log.With("connID", connID, "userKey", res.UserKey)
+	// deps is a value copy per connection, so scoping its logger here
+	// carries connID into every frame Dispatch handles as well.
+	deps.Log = log
+
 	conn := connection.NewConn(ws, connection.ConnConfig{
+		ID:                  connID,
 		UserKey:             res.UserKey,
 		MaxBufferedBytes:    cfg.MaxBufferedBytes,
 		MaxConsecutiveDrops: cfg.MaxConsecutiveDrops,
@@ -466,7 +480,7 @@ func serveWS(
 	if err := redisx.AddConnection(rootCtx, deps.RDB, conn.UserKey()); err != nil {
 		log.Warn("AddConnection failed", "err", err.Error())
 	}
-	log.Info("websocket client connected", "userKey", conn.UserKey())
+	log.Info("websocket client connected")
 
 	connCtx, cancel := context.WithCancel(rootCtx)
 	defer cancel()

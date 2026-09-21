@@ -148,6 +148,12 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 		return
 	}
 	reqID := env.ReqID
+	// Scope the logger to this frame. Combined with the connID the app
+	// layer already attached, a client's reqID is enough to find every
+	// line the server wrote while handling that one request.
+	if reqID != "" {
+		log = log.With("reqID", reqID)
+	}
 	m.FramesReceived.WithLabelValues(frameTypeLabel(env.Type)).Inc()
 
 	allowed, err := ratelimit.Allow(ctx, d.RDB, "msg", c.UserKey(), d.MessageRateLimit)
@@ -167,7 +173,9 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 		return
 	}
 
-	log.Debug("message received", "type", env.Type, "reqID", reqID)
+	log.Debug("message received", "type", env.Type)
+
+	d.Log = log
 
 	var (
 		responseMsg string
