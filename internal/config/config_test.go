@@ -73,3 +73,32 @@ func TestValidate_AcceptsAddrsWithoutHost(t *testing.T) {
 		t.Fatal("neither REDIS_HOST nor REDIS_ADDRS should fail validation")
 	}
 }
+
+func TestGetbool(t *testing.T) {
+	tests := []struct {
+		value string
+		want  bool
+	}{
+		{"1", true}, {"true", true}, {"TRUE", true}, {"yes", true}, {"on", true},
+		{"0", false}, {"false", false}, {"no", false}, {"off", false},
+		// A typo must leave the feature off rather than silently on.
+		{"ture", false}, {"enabled", false}, {"maybe", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.value, func(t *testing.T) {
+			t.Setenv("SOME_FLAG", tc.value)
+			if got := getbool("SOME_FLAG", false); got != tc.want {
+				t.Fatalf("getbool(%q) = %v, want %v", tc.value, got, tc.want)
+			}
+		})
+	}
+
+	t.Run("unset uses the fallback", func(t *testing.T) {
+		if getbool("DEFINITELY_UNSET_FLAG", true) != true {
+			t.Fatal("unset should return the fallback")
+		}
+		if getbool("DEFINITELY_UNSET_FLAG", false) != false {
+			t.Fatal("unset should return the fallback")
+		}
+	})
+}

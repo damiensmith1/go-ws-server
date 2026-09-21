@@ -38,6 +38,11 @@ type Config struct {
 	// messages are dropped back to back. Zero disables eviction.
 	MaxConsecutiveDrops int
 
+	// EnableCompression negotiates permessage-deflate on upgrade. Off by
+	// default: it trades CPU and per-connection memory for bandwidth, and
+	// which side of that trade is right depends on payload shape.
+	EnableCompression bool
+
 	// AllowedOrigins is the Origin allowlist for websocket upgrades. Empty
 	// keeps gorilla's same-origin default.
 	AllowedOrigins []string
@@ -152,6 +157,7 @@ func Load() (*Config, error) {
 	if cfg.MaxConsecutiveDrops, err = getintOr("MAX_CONSECUTIVE_DROPS", 100); err != nil {
 		return nil, err
 	}
+	cfg.EnableCompression = getbool("ENABLE_COMPRESSION", false)
 	if cfg.StreamMaxLength, err = getint64Or("STREAM_MAX_LENGTH", 1000); err != nil {
 		return nil, err
 	}
@@ -234,6 +240,22 @@ func (c *Config) validate() error {
 		return errors.New("MAX_BUFFERED_BYTES must be positive")
 	}
 	return nil
+}
+
+// getbool reads a boolean env var. Anything other than a recognised true
+// value is false, including a typo — so a misspelled "ture" leaves the
+// feature off rather than silently on.
+func getbool(key string, fallback bool) bool {
+	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
+	if v == "" {
+		return fallback
+	}
+	switch v {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 // getcsv splits a comma-separated env var, trimming spaces and dropping

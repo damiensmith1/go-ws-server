@@ -160,6 +160,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
 | `MAX_BUFFERED_BYTES`           | `1048576` | Per-socket outbound buffer threshold; messages drop above this. |
 | `MAX_CONSECUTIVE_DROPS`        | `100`   | Evict a connection after this many back-to-back drops. `0` disables eviction. |
+| `ENABLE_COMPRESSION`           | `false` | Negotiate `permessage-deflate` on upgrade.                        |
 | `TLS_KEY_PATH` / `TLS_CERT_PATH` | —     | Set both to run as `wss://`.                                      |
 | `AUTH_JWT_SECRET`              | —       | Required for auth. When unset the server runs **insecure**.       |
 | `AUTH_JWT_AUDIENCE`            | —       | Optional JWT `aud` claim to enforce.                              |

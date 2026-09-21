@@ -242,6 +242,9 @@ func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 		ReadBufferSize:  4096,
 		WriteBufferSize: 4096,
 		CheckOrigin:     originChecker(cfg.AllowedOrigins, log),
+		// permessage-deflate. Negotiated per connection: a client that
+		// does not offer it gets an uncompressed connection as before.
+		EnableCompression: cfg.EnableCompression,
 	}
 
 	mux := http.NewServeMux()

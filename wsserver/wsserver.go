@@ -113,6 +113,10 @@ type Options struct {
 	Logger   *slog.Logger
 	LogLevel string
 
+	// EnableCompression negotiates permessage-deflate on upgrade. It
+	// trades CPU and per-connection memory for bandwidth.
+	EnableCompression bool
+
 	// AllowedOrigins is the Origin allowlist for upgrades. Empty keeps
 	// gorilla's same-origin default; a single "*" allows all.
 	AllowedOrigins []string
@@ -192,6 +196,7 @@ func OptionsFromEnv() (Options, error) {
 		MaxPayloadBytes:       cfg.MaxPayloadBytes,
 		MaxBufferedBytes:      cfg.MaxBufferedBytes,
 		MaxConsecutiveDrops:   cfg.MaxConsecutiveDrops,
+		EnableCompression:     cfg.EnableCompression,
 		StreamMaxLength:       cfg.StreamMaxLength,
 		StreamTTL:             cfg.StreamTTL,
 		MessagesPerSec:        cfg.RateLimitMessagesPerSec,
@@ -320,6 +325,7 @@ func (o Options) toConfig() (*config.Config, error) {
 		MaxPayloadBytes:         orInt64(o.MaxPayloadBytes, 64*1024),
 		MaxBufferedBytes:        orInt64(o.MaxBufferedBytes, 1024*1024),
 		MaxConsecutiveDrops:     drops,
+		EnableCompression:       o.EnableCompression,
 		StreamMaxLength:         orInt64(o.StreamMaxLength, 1000),
 		StreamTTL:               o.StreamTTL,
 		RateLimitMessagesPerSec: orInt(o.MessagesPerSec, 50),
