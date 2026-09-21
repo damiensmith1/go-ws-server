@@ -138,13 +138,13 @@ var blockedV4 = parseCIDRs([]string{
 })
 
 var blockedV6 = parseCIDRs([]string{
-	"::/128",        // unspecified
-	"::1/128",       // loopback
-	"64:ff9b::/96",  // NAT64
-	"100::/64",      // discard
-	"fc00::/7",      // unique local
-	"fe80::/10",     // link-local
-	"ff00::/8",      // multicast
+	"::/128",       // unspecified
+	"::1/128",      // loopback
+	"64:ff9b::/96", // NAT64
+	"100::/64",     // discard
+	"fc00::/7",     // unique local
+	"fe80::/10",    // link-local
+	"ff00::/8",     // multicast
 })
 
 func parseCIDRs(cidrs []string) []*net.IPNet {

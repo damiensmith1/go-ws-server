@@ -11,12 +11,12 @@
 // The bus is the only place that has to handle the live-vs-replay race.
 // When a client subscribes with `since`, we:
 //
-//   1. Register the subscriber AND set buffering=true (one critical section)
-//      so any live publish that arrives mid-replay is buffered, not sent.
-//   2. XRANGE the stream, send each entry tagged replay=true, mark its
-//      streamId as already-replayed.
-//   3. Flip buffering=false and drain the buffer, skipping IDs we've
-//      already replayed.
+//  1. Register the subscriber AND set buffering=true (one critical section)
+//     so any live publish that arrives mid-replay is buffered, not sent.
+//  2. XRANGE the stream, send each entry tagged replay=true, mark its
+//     streamId as already-replayed.
+//  3. Flip buffering=false and drain the buffer, skipping IDs we've
+//     already replayed.
 //
 // Pub/Sub fan-out to subscribers is non-blocking: if a slow client's send
 // channel is full we drop and log, so one stalled client cannot back up
