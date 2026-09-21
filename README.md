@@ -46,6 +46,55 @@ docker run -d \
 
 For TLS, mount your cert directory and point `TLS_KEY_PATH` / `TLS_CERT_PATH` at the mounted paths.
 
+## Embedding
+
+The command in the repository root is a thin wrapper over package
+`wsserver`. Import it to run the server inside another Go program, or to
+supply policy in code rather than through environment variables:
+
+```go
+import "github.com/damiensmith1/go-ws-server/wsserver"
+
+srv, err := wsserver.New(wsserver.Options{
+    ListenAddr: ":8080",
+    RedisAddrs: []string{"localhost:6379"},
+    Verifier:   myVerifier,   // auth.Verifier
+    Authorizer: myAuthorizer, // authz.Authorizer
+})
+if err != nil {
+    return err
+}
+return srv.Run(ctx)
+```
+
+`Options` is plain data with working zero values, so set only what differs
+from the defaults. To keep environment configuration and override a piece
+of it:
+
+```go
+opts, err := wsserver.OptionsFromEnv()
+opts.Authorizer = myAuthorizer
+```
+
+`Verifier`, `Authorizer` and `Metrics` are the three seams that cannot be
+expressed as configuration; leaving any nil falls back to the same default
+the command uses. `srv.Bus()` publishes from inside the host process
+without a websocket round trip, and `srv.Metrics().Registry()` exposes the
+collectors on your own HTTP server instead of a second listener.
+
+### Public packages
+
+| Package | For |
+| --- | --- |
+| `wsserver` | Constructing and running the server. |
+| `auth`     | Implementing `Verifier` to authenticate upgrades. |
+| `authz`    | Implementing `Authorizer` to gate per-topic access. |
+| `bus`      | `Subscriber` / `BroadcastTarget`, and publishing in-process. |
+| `protocol` | Encoding and decoding wire frames. |
+| `metrics`  | The collector set and its registry. |
+
+Everything under `internal/` is private and may change without notice.
+
 ## Configuration
 
 All config is read from environment variables. See [`.env.example`](./.env.example) for the full list. Key ones:

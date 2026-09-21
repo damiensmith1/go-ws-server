@@ -4,6 +4,10 @@
 // the full list. The server is stateless — every running instance shares
 // state through Redis, so you can run as many copies behind a TCP/HTTP
 // load balancer as your traffic warrants.
+//
+// This command is deliberately a thin wrapper over package wsserver. To
+// embed the server in another program, or to supply an auth.Verifier or
+// authz.Authorizer in code, import that package directly.
 package main
 
 import (
@@ -14,9 +18,8 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/damiensmith1/go-ws-server/internal/app"
-	"github.com/damiensmith1/go-ws-server/internal/config"
 	"github.com/damiensmith1/go-ws-server/internal/logger"
+	"github.com/damiensmith1/go-ws-server/wsserver"
 )
 
 func main() {
@@ -27,15 +30,16 @@ func main() {
 }
 
 func mainErr() error {
-	cfg, err := config.Load()
+	opts, err := wsserver.OptionsFromEnv()
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	log := logger.New(os.Stdout, cfg.LogLevel)
+	log := logger.New(os.Stdout, opts.LogLevel)
 	slog.SetDefault(log)
+	opts.Logger = log
 
-	a, err := app.New(cfg, log)
+	srv, err := wsserver.New(opts)
 	if err != nil {
 		return err
 	}
@@ -43,5 +47,5 @@ func mainErr() error {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	return a.Run(ctx)
+	return srv.Run(ctx)
 }

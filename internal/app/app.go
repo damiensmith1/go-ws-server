@@ -132,7 +132,20 @@ func metricsServer(addr string, m *metrics.Metrics) *http.Server {
 // can register collectors of their own on the same registry.
 func (a *App) Metrics() *metrics.Metrics { return a.metrics }
 
-func New(cfg *config.Config, log *slog.Logger) (*App, error) {
+// Bus exposes the message bus so an embedding process can publish without
+// a websocket client round trip.
+func (a *App) Bus() *bus.Bus { return a.bus }
+
+// Ext carries the pluggable pieces an embedder supplies in code rather
+// than through configuration. A nil field is built from cfg exactly as it
+// was before Ext existed, so the command-line server passes a zero Ext.
+type Ext struct {
+	Verifier   auth.Verifier
+	Authorizer authz.Authorizer
+	Metrics    *metrics.Metrics
+}
+
+func New(cfg *config.Config, log *slog.Logger, ext Ext) (*App, error) {
 	if log == nil {
 		log = slog.Default()
 	}
@@ -142,7 +155,10 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		Password:   cfg.RedisPassword,
 		MasterName: cfg.RedisMasterName,
 	}
-	m := metrics.New()
+	m := ext.Metrics
+	if m == nil {
+		m = metrics.New()
+	}
 
 	rdb := redisx.New(ropts)
 	pub := redisx.New(ropts)
@@ -155,10 +171,12 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 	pub.AddHook(hook)
 	sub.AddHook(hook)
 
-	var verifier auth.Verifier
-	if cfg.AuthJWTSecret == "" {
+	verifier := ext.Verifier
+	switch {
+	case verifier != nil:
+	case cfg.AuthJWTSecret == "":
 		verifier = auth.NewInsecure(log)
-	} else {
+	default:
 		verifier = auth.NewJWT(auth.JWTConfig{
 			Secret:   cfg.AuthJWTSecret,
 			Audience: cfg.AuthJWTAudience,
@@ -173,11 +191,13 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		sub.Close()
 		return nil, err
 	}
-	var authorizer authz.Authorizer
-	if rules == nil {
+	authorizer := ext.Authorizer
+	switch {
+	case authorizer != nil:
+	case rules == nil:
 		log.Warn("AUTHZ_RULES is not set — every authenticated client can subscribe to, publish to and lock every topic. Set it before serving more than one tenant.")
 		authorizer = authz.AllowAll()
-	} else {
+	default:
 		authorizer = rules
 	}
 

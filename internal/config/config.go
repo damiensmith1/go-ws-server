@@ -82,6 +82,10 @@ type Config struct {
 	InstanceID string
 }
 
+// NewInstanceID generates the identifier used for scheduler lock
+// ownership and log correlation when none is supplied.
+func NewInstanceID() string { return uuid.NewString() }
+
 // DefaultReadinessTimeout is used when READINESS_TIMEOUT_MS is unset or
 // non-positive.
 const DefaultReadinessTimeout = 2 * time.Second
