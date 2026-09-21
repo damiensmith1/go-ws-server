@@ -37,6 +37,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/damiensmith1/go-ws-server/internal/metrics"
 	"github.com/damiensmith1/go-ws-server/internal/protocol"
 )
 
@@ -63,6 +64,10 @@ type BroadcastTarget interface {
 type Config struct {
 	StreamMaxLength int64
 	StreamTTL       time.Duration
+
+	// Metrics is optional. A nil value gets a private collector set, so
+	// call sites never need a nil check.
+	Metrics *metrics.Metrics
 }
 
 // Bus is the running pub/sub + replay coordinator.
@@ -74,6 +79,7 @@ type Bus struct {
 	broadcast BroadcastTarget
 
 	pubsub *redis.PubSub
+	m      *metrics.Metrics
 
 	mu        sync.Mutex
 	topicSubs map[string]map[Subscriber]struct{}
@@ -106,8 +112,12 @@ func New(pub, sub redis.UniversalClient, target BroadcastTarget, cfg Config, log
 	if log == nil {
 		log = slog.Default()
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = metrics.New()
+	}
 	return &Bus{
 		cfg:       cfg,
+		m:         cfg.Metrics,
 		pub:       pub,
 		sub:       sub,
 		log:       log,
@@ -191,16 +201,24 @@ func (b *Bus) handleTopic(topic, payload string) {
 	// subscriber mid-replay, collect the rest. Taking the lock once per
 	// subscriber instead serialises every topic's fan-out on b.mu as soon
 	// as a single topic has many subscribers.
+	start := time.Now()
+	buffered := 0
+
 	b.mu.Lock()
 	deliver := make([]Subscriber, 0, len(b.topicSubs[topic]))
 	for sub := range b.topicSubs[topic] {
 		if st := b.replay[replayKey{sub, topic}]; st != nil && st.buffering {
 			st.buf = append(st.buf, bufferedMsg{streamID: p.StreamID, data: p.Data})
+			buffered++
 			continue
 		}
 		deliver = append(deliver, sub)
 	}
 	b.mu.Unlock()
+
+	b.m.FanoutSubscribers.Observe(float64(len(deliver)))
+	b.m.FanoutBuffered.Add(float64(buffered))
+	defer func() { b.m.FanoutDuration.Observe(time.Since(start).Seconds()) }()
 
 	if len(deliver) == 0 {
 		return
@@ -252,6 +270,7 @@ func (b *Bus) PublishTopic(ctx context.Context, topic string, data json.RawMessa
 	if err := b.pub.Publish(ctx, topicChannelPrefix+topic, announce).Err(); err != nil {
 		return "", fmt.Errorf("publish topic: %w", err)
 	}
+	b.m.PublishTotal.Inc()
 	return streamID, nil
 }
 
@@ -280,7 +299,10 @@ func (b *Bus) addLocalSubLocked(topic string, sub Subscriber) {
 		set = make(map[Subscriber]struct{})
 		b.topicSubs[topic] = set
 	}
-	set[sub] = struct{}{}
+	if _, dup := set[sub]; !dup {
+		set[sub] = struct{}{}
+		b.m.LocalSubscriptions.Inc()
+	}
 }
 
 // RemoveLocalSubscription removes a subscriber from a topic. Also clears
@@ -289,7 +311,10 @@ func (b *Bus) RemoveLocalSubscription(topic string, sub Subscriber) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	if set, ok := b.topicSubs[topic]; ok {
-		delete(set, sub)
+		if _, present := set[sub]; present {
+			delete(set, sub)
+			b.m.LocalSubscriptions.Dec()
+		}
 		if len(set) == 0 {
 			delete(b.topicSubs, topic)
 		}
@@ -305,6 +330,7 @@ func (b *Bus) RemoveSubscriberAll(sub Subscriber) {
 	for topic, set := range b.topicSubs {
 		if _, ok := set[sub]; ok {
 			delete(set, sub)
+			b.m.LocalSubscriptions.Dec()
 			if len(set) == 0 {
 				delete(b.topicSubs, topic)
 			}
@@ -326,6 +352,8 @@ func (b *Bus) SubscribeWithReplay(ctx context.Context, sub Subscriber, topic, si
 	if err != nil {
 		return false, "", err
 	}
+	start := time.Now()
+	defer func() { b.m.ReplayDuration.Observe(time.Since(start).Seconds()) }()
 
 	// 1. Register subscriber AND mark buffering under a single critical
 	//    section. From this moment on, any live publish on this topic to
@@ -348,6 +376,10 @@ func (b *Bus) SubscribeWithReplay(ctx context.Context, sub Subscriber, topic, si
 		return false, "", err
 	}
 
+	b.m.ReplayMessages.Add(float64(len(msgs)))
+	if trunc {
+		b.m.ReplayTruncated.Inc()
+	}
 	for _, m := range msgs {
 		b.mu.Lock()
 		if st := b.replay[replayKey{sub, topic}]; st != nil {

@@ -27,6 +27,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
+	"github.com/damiensmith1/go-ws-server/internal/metrics"
 	"github.com/damiensmith1/go-ws-server/internal/protocol"
 	"github.com/damiensmith1/go-ws-server/internal/redisx"
 	"github.com/damiensmith1/go-ws-server/internal/ssrf"
@@ -34,9 +35,13 @@ import (
 
 // Config configures the scheduler instance.
 type Config struct {
-	InstanceID string
-	Guard      *ssrf.Guard
+	InstanceID  string
+	Guard       *ssrf.Guard
 	HTTPTimeout time.Duration // per-request HTTP timeout. 10s if zero.
+
+	// Metrics is optional. A nil value gets a private collector set, so
+	// call sites never need a nil check.
+	Metrics *metrics.Metrics
 }
 
 // Scheduler is the distributed job runner. Construct with New, start with
@@ -46,6 +51,7 @@ type Scheduler struct {
 	rdb    redis.UniversalClient
 	log    *slog.Logger
 	client *http.Client
+	m      *metrics.Metrics
 
 	mu     sync.Mutex
 	wakeCh chan struct{}
@@ -59,6 +65,9 @@ func New(rdb redis.UniversalClient, cfg Config, log *slog.Logger) *Scheduler {
 	}
 	if cfg.HTTPTimeout == 0 {
 		cfg.HTTPTimeout = 10 * time.Second
+	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = metrics.New()
 	}
 
 	dialer := &net.Dialer{
@@ -82,6 +91,7 @@ func New(rdb redis.UniversalClient, cfg Config, log *slog.Logger) *Scheduler {
 	}
 
 	return &Scheduler{
+		m:      cfg.Metrics,
 		cfg:    cfg,
 		rdb:    rdb,
 		log:    log,
@@ -115,6 +125,15 @@ func (s *Scheduler) Run(ctx context.Context) error {
 				return nil
 			}
 			continue
+		}
+
+		// Refresh the depth gauge here rather than in tick(): the loop
+		// parks for up to an hour on an empty queue, and this runs on
+		// every wake. An empty queue needs no extra round trip.
+		if !ok {
+			s.m.SchedulerQueueDepth.Set(0)
+		} else if n, err := redisx.JobCount(ctx, s.rdb); err == nil {
+			s.m.SchedulerQueueDepth.Set(float64(n))
 		}
 
 		var wait time.Duration
@@ -196,6 +215,7 @@ func (s *Scheduler) processDue(ctx context.Context, d redisx.DueJobsResult, now 
 		return
 	}
 	if !claimed {
+		s.m.SchedulerClaimLost.Inc()
 		s.log.Debug("job already claimed; skipping", "jobId", jd.JobID)
 		return
 	}
@@ -210,8 +230,14 @@ func (s *Scheduler) processDue(ctx context.Context, d redisx.DueJobsResult, now 
 		return
 	}
 
-	if err := s.executeJob(ctx, jd); err != nil {
-		s.log.Error("job execution failed", "jobId", jd.JobID, "err", err.Error())
+	execStart := time.Now()
+	execErr := s.executeJob(ctx, jd)
+	s.m.SchedulerDuration.Observe(time.Since(execStart).Seconds())
+	if execErr != nil {
+		s.m.SchedulerExecuted.WithLabelValues("failure").Inc()
+		s.log.Error("job execution failed", "jobId", jd.JobID, "err", execErr.Error())
+	} else {
+		s.m.SchedulerExecuted.WithLabelValues("success").Inc()
 	}
 
 	// Reschedule if it has an interval and it's still within validUntil.

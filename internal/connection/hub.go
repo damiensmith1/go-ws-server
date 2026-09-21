@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"github.com/gorilla/websocket"
+
+	"github.com/damiensmith1/go-ws-server/internal/metrics"
 )
 
 // Hub tracks every active connection grouped by userKey. It implements
@@ -116,6 +118,11 @@ type Conn struct {
 
 	closeOnce sync.Once
 	closed    chan struct{}
+
+	m           *metrics.Metrics
+	openedAt    time.Time
+	closeReason string // written once, inside closeOnce
+	readErr     bool   // set by runReader before it returns; read after
 }
 
 // ConnConfig configures a new Conn.
@@ -124,6 +131,10 @@ type ConnConfig struct {
 	MaxBufferedBytes int64
 	SendChanCapacity int
 	WriteWait        time.Duration
+
+	// Metrics is optional. A nil value gets a private collector set, so
+	// call sites never need a nil check.
+	Metrics *metrics.Metrics
 }
 
 // NewConn wraps a websocket.Conn. Run() must be called to start the
@@ -141,7 +152,13 @@ func NewConn(ws *websocket.Conn, cfg ConnConfig, log *slog.Logger) *Conn {
 	if log == nil {
 		log = slog.Default()
 	}
+	if cfg.Metrics == nil {
+		cfg.Metrics = metrics.New()
+	}
+	cfg.Metrics.ConnectionsActive.Inc()
 	return &Conn{
+		m:         cfg.Metrics,
+		openedAt:  time.Now(),
 		ws:        ws,
 		userKey:   cfg.UserKey,
 		log:       log.With("userKey", cfg.UserKey),
@@ -167,6 +184,7 @@ func (c *Conn) Send(msg []byte) {
 	}
 	n := int64(len(msg))
 	if c.bufBytes.Load()+n > c.maxBuf {
+		c.m.FramesDropped.WithLabelValues(metrics.DropBufferThreshold).Inc()
 		c.log.Warn("dropping message: socket buffer above threshold",
 			"bufferedAmount", c.bufBytes.Load(),
 			"messageBytes", n,
@@ -176,9 +194,11 @@ func (c *Conn) Send(msg []byte) {
 	select {
 	case c.sendCh <- outFrame{kind: frameText, payload: msg}:
 		c.bufBytes.Add(n)
+		c.m.FramesSent.Inc()
 	case <-c.closed:
 		return
 	default:
+		c.m.FramesDropped.WithLabelValues(metrics.DropChannelFull).Inc()
 		c.log.Warn("dropping message: send chan full")
 	}
 }
@@ -191,6 +211,7 @@ func (c *Conn) SendNow(ctx context.Context, msg []byte) {
 	select {
 	case c.sendCh <- outFrame{kind: frameText, payload: msg}:
 		c.bufBytes.Add(n)
+		c.m.FramesSent.Inc()
 	case <-ctx.Done():
 	case <-c.closed:
 	}
@@ -211,9 +232,18 @@ func (c *Conn) Ping() {
 	}
 }
 
-// Close requests a graceful shutdown. Idempotent.
+// Close requests a graceful shutdown. Idempotent. The reason recorded
+// for metrics is metrics.CloseServer; internal callers that know better
+// use closeWith.
 func (c *Conn) Close(code int, reason string) {
+	c.closeWith(code, reason, metrics.CloseServer)
+}
+
+// closeWith is Close plus the category to attribute the close to. Only
+// the first caller's category is recorded, matching closeOnce semantics.
+func (c *Conn) closeWith(code int, reason, category string) {
 	c.closeOnce.Do(func() {
+		c.closeReason = category
 		select {
 		case c.sendCh <- outFrame{kind: frameClose, closeCode: code, payload: []byte(reason)}:
 		default:
@@ -294,6 +324,7 @@ func (c *Conn) runReader(deps readerDeps) {
 				websocket.CloseAbnormalClosure,
 			) && !errors.Is(err, websocket.ErrCloseSent) {
 				c.log.Debug("reader: read error", "err", err.Error())
+				c.readErr = true
 			}
 			return
 		}
@@ -343,7 +374,7 @@ func (c *Conn) runIdleWatcher(ctx context.Context, idle time.Duration, keepAlive
 			c.Ping()
 		case <-timer.C:
 			c.log.Info("socket idle timeout")
-			c.Close(websocket.CloseNormalClosure, "idle timeout")
+			c.closeWith(websocket.CloseNormalClosure, "idle timeout", metrics.CloseIdleTimeout)
 			return
 		}
 	}
@@ -367,7 +398,15 @@ func (c *Conn) Run(
 		dispatch:   dispatch,
 	})
 
-	c.Close(websocket.CloseNormalClosure, "")
+	reason := metrics.ClosePeer
+	if c.readErr {
+		reason = metrics.CloseReadError
+	}
+	c.closeWith(websocket.CloseNormalClosure, "", reason)
+
+	c.m.ConnectionsActive.Dec()
+	c.m.ConnectionsClosed.WithLabelValues(c.closeReason).Inc()
+	c.m.ConnectionDuration.Observe(time.Since(c.openedAt).Seconds())
 	// We deliberately do NOT close c.sendCh: external goroutines (the bus
 	// pubsub callback, the hub) may still hold references and try to Send
 	// after we exit. Send/Ping gate on c.closed and become no-ops; the

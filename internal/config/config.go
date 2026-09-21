@@ -38,6 +38,11 @@ type Config struct {
 	// keeps gorilla's same-origin default.
 	AllowedOrigins []string
 
+	// MetricsAddr is the listen address for /metrics, e.g. ":9090". Empty
+	// disables the endpoint. It is deliberately a separate listener from
+	// the websocket port so metrics are not exposed to clients.
+	MetricsAddr string
+
 	TLSKeyPath  string
 	TLSCertPath string
 
@@ -73,6 +78,7 @@ func Load() (*Config, error) {
 		RedisMasterName: os.Getenv("REDIS_MASTER_NAME"),
 
 		AllowedOrigins: getcsv("ALLOWED_ORIGINS"),
+		MetricsAddr:    os.Getenv("METRICS_ADDR"),
 
 		AuthJWTSecret:   os.Getenv("AUTH_JWT_SECRET"),
 		AuthJWTAudience: os.Getenv("AUTH_JWT_AUDIENCE"),

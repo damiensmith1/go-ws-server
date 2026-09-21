@@ -13,6 +13,7 @@ A Redis-backed WebSocket server in Go with pub/sub topics, topic locking, per-us
 - **Rate limiting** — per-userKey, per-bucket fixed-window limits in Redis.
 - **Optional TLS** — runs as `ws://` by default, `wss://` when `TLS_KEY_PATH` and `TLS_CERT_PATH` are set.
 - **Keep-alive** — opt-in ping/pong to hold long-lived connections.
+- **Prometheus metrics** — connection lifecycle, frame throughput and drops by cause, bus fan-out size and latency, replay volume, Redis command latency and errors, rate-limit decisions, and scheduler outcomes. Served on a separate listener so the websocket port exposes nothing extra. No metric is labelled by topic, userKey or job ID, so client input cannot inflate cardinality.
 - **Structured logging** — `log/slog` JSON output with automatic redaction of any field whose key ends in `password`, `token`, `authorization`, or `secret`.
 
 ## Requirements
@@ -57,6 +58,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `REDIS_PASSWORD`               | —       | Redis auth.                                                       |
 | `WEBSOCKET_PORT`               | `8080`  | Listen port.                                                      |
 | `ALLOWED_ORIGINS`              | —       | Comma-separated `Origin` allowlist for upgrades. Empty keeps the same-origin default; `*` allows all (dev only). |
+| `METRICS_ADDR`                 | —       | Listen address for Prometheus `/metrics`, e.g. `:9090`. Empty disables it. |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
 | `MAX_BUFFERED_BYTES`           | `1048576` | Per-socket outbound buffer threshold; messages drop above this. |

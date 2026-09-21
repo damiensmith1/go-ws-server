@@ -10,6 +10,7 @@ import (
 	"github.com/redis/go-redis/v9"
 
 	"github.com/damiensmith1/go-ws-server/internal/bus"
+	"github.com/damiensmith1/go-ws-server/internal/metrics"
 	"github.com/damiensmith1/go-ws-server/internal/protocol"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
 	"github.com/damiensmith1/go-ws-server/internal/redisx"
@@ -27,6 +28,39 @@ type Deps struct {
 	MessageRateLimit ratelimit.Config
 	JobRateLimit     ratelimit.Config
 	OnSchedulerWake  func()
+
+	// Metrics is optional. A nil value gets a private collector set, so
+	// call sites never need a nil check.
+	Metrics *metrics.Metrics
+}
+
+// knownFrameTypes bounds the `type` label. env.Type is client-controlled,
+// so feeding it to a label verbatim would let anyone mint unlimited time
+// series by sending junk type strings.
+var knownFrameTypes = map[string]struct{}{
+	protocol.TypeSubscribe:   {},
+	protocol.TypeUnsubscribe: {},
+	protocol.TypePublish:     {},
+	protocol.TypeLockTopic:   {},
+	protocol.TypeUnlockTopic: {},
+	protocol.TypeRenewLock:   {},
+	protocol.TypeScheduleJob: {},
+	protocol.TypeRemoveJob:   {},
+	protocol.TypeBroadcast:   {},
+}
+
+func frameTypeLabel(t string) string {
+	if _, ok := knownFrameTypes[t]; ok {
+		return t
+	}
+	return "unknown"
+}
+
+func decisionLabel(allowed bool) string {
+	if allowed {
+		return "allowed"
+	}
+	return "denied"
 }
 
 // Dispatch parses one inbound frame and runs its handler. Errors flow back
@@ -36,13 +70,19 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 	if log == nil {
 		log = slog.Default()
 	}
+	m := d.Metrics
+	if m == nil {
+		m = metrics.New()
+	}
 
 	var env protocol.Envelope
 	if err := json.Unmarshal(raw, &env); err != nil {
+		m.FramesReceived.WithLabelValues("invalid_json").Inc()
 		c.SendNow(ctx, protocol.EncodeError("", "Invalid JSON"))
 		return
 	}
 	reqID := env.ReqID
+	m.FramesReceived.WithLabelValues(frameTypeLabel(env.Type)).Inc()
 
 	allowed, err := ratelimit.Allow(ctx, d.RDB, "msg", c.UserKey(), d.MessageRateLimit)
 	if err != nil {
@@ -50,6 +90,7 @@ func Dispatch(ctx context.Context, c *Conn, raw []byte, d Deps) {
 		c.SendNow(ctx, protocol.EncodeError(reqID, "Internal error"))
 		return
 	}
+	m.RateLimitDecisions.WithLabelValues("msg", decisionLabel(allowed)).Inc()
 	if !allowed {
 		c.SendNow(ctx, protocol.EncodeError(reqID, "Rate limit exceeded"))
 		return
@@ -181,6 +222,9 @@ func handleRenewLock(ctx context.Context, c *Conn, env *protocol.Envelope, d Dep
 
 func handleScheduleJob(ctx context.Context, c *Conn, env *protocol.Envelope, d Deps) (string, error) {
 	allowed, err := ratelimit.Allow(ctx, d.RDB, "job", c.UserKey(), d.JobRateLimit)
+	if d.Metrics != nil && err == nil {
+		d.Metrics.RateLimitDecisions.WithLabelValues("job", decisionLabel(allowed)).Inc()
+	}
 	if err != nil {
 		return "", fmt.Errorf("rate-limit check: %w", err)
 	}

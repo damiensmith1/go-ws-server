@@ -23,6 +23,7 @@ import (
 	"github.com/damiensmith1/go-ws-server/internal/bus"
 	"github.com/damiensmith1/go-ws-server/internal/config"
 	"github.com/damiensmith1/go-ws-server/internal/connection"
+	"github.com/damiensmith1/go-ws-server/internal/metrics"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
 	"github.com/damiensmith1/go-ws-server/internal/redisx"
 	"github.com/damiensmith1/go-ws-server/internal/scheduler"
@@ -43,6 +44,8 @@ type App struct {
 	server   *http.Server
 	listener net.Listener
 	verifier auth.Verifier
+	metrics  *metrics.Metrics
+	metricsS *http.Server
 }
 
 // originChecker builds the upgrader's CheckOrigin. Returning nil leaves
@@ -79,6 +82,26 @@ func originChecker(allowed []string, log *slog.Logger) func(*http.Request) bool 
 	}
 }
 
+// metricsServer builds the /metrics listener. It is deliberately separate
+// from the websocket server: the websocket port is usually public, and
+// process and Go runtime internals should not be.
+func metricsServer(addr string, m *metrics.Metrics) *http.Server {
+	if addr == "" {
+		return nil
+	}
+	mux := http.NewServeMux()
+	mux.Handle("/metrics", m.Handler())
+	return &http.Server{
+		Addr:              addr,
+		Handler:           mux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+}
+
+// Metrics exposes the collector set, so callers embedding this package
+// can register collectors of their own on the same registry.
+func (a *App) Metrics() *metrics.Metrics { return a.metrics }
+
 func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 	if log == nil {
 		log = slog.Default()
@@ -89,9 +112,18 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		Password:   cfg.RedisPassword,
 		MasterName: cfg.RedisMasterName,
 	}
+	m := metrics.New()
+
 	rdb := redisx.New(ropts)
 	pub := redisx.New(ropts)
 	sub := redisx.New(ropts)
+
+	// One hook covers every Redis call the server makes, so redisx, bus,
+	// ratelimit and scheduler need no instrumentation of their own.
+	hook := metrics.NewRedisHook(m)
+	rdb.AddHook(hook)
+	pub.AddHook(hook)
+	sub.AddHook(hook)
 
 	var verifier auth.Verifier
 	if cfg.AuthJWTSecret == "" {
@@ -109,12 +141,14 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 	busInst := bus.New(pub, sub, hub, bus.Config{
 		StreamMaxLength: cfg.StreamMaxLength,
 		StreamTTL:       cfg.StreamTTL,
+		Metrics:         m,
 	}, log)
 
 	guard := &ssrf.Guard{AllowedHosts: cfg.SchedulerAllowedHosts}
 	sched := scheduler.New(rdb, scheduler.Config{
 		InstanceID: cfg.InstanceID,
 		Guard:      guard,
+		Metrics:    m,
 	}, log)
 
 	deps := connection.Deps{
@@ -125,6 +159,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		MessageRateLimit: ratelimit.DefaultMessageConfig(cfg.RateLimitMessagesPerSec),
 		JobRateLimit:     ratelimit.DefaultJobConfig(cfg.RateLimitJobsPerMin),
 		OnSchedulerWake:  sched.Wake,
+		Metrics:          m,
 	}
 
 	upgrader := websocket.Upgrader{
@@ -176,6 +211,8 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 		server:   server,
 		listener: listener,
 		verifier: verifier,
+		metrics:  m,
+		metricsS: metricsServer(cfg.MetricsAddr, m),
 	}, nil
 }
 
@@ -233,6 +270,18 @@ func (a *App) Run(ctx context.Context) error {
 		}
 	}()
 
+	if a.metricsS != nil {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			a.log.Info("metrics listening", "addr", a.metricsS.Addr)
+			if err := a.metricsS.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+				// Losing metrics must not take the server down.
+				a.log.Error("metrics server stopped", "err", err.Error())
+			}
+		}()
+	}
+
 	var runErr error
 	select {
 	case <-ctx.Done():
@@ -254,6 +303,11 @@ func (a *App) shutdown() {
 
 	if err := a.server.Shutdown(shutdownCtx); err != nil {
 		a.log.Warn("http shutdown error", "err", err.Error())
+	}
+	if a.metricsS != nil {
+		if err := a.metricsS.Shutdown(shutdownCtx); err != nil {
+			a.log.Warn("metrics shutdown error", "err", err.Error())
+		}
 	}
 	for _, c := range a.hub.Snapshot() {
 		c.Close(websocket.CloseGoingAway, "server shutting down")
@@ -277,16 +331,26 @@ func serveWS(
 	r *http.Request,
 	w http.ResponseWriter,
 ) {
+	m := deps.Metrics
+	if m == nil {
+		m = metrics.New()
+	}
+
 	res, err := verifier.Verify(r)
 	if err != nil || res == nil {
+		m.ConnectionsTotal.WithLabelValues(metrics.UpgradeRejectedAuth).Inc()
 		http.Error(w, "Unauthorized", http.StatusUnauthorized)
 		return
 	}
 
+	// Upgrade can fail on a rejected Origin, a bad handshake, or a client
+	// that hung up; gorilla has already written the response.
 	ws, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
+		m.ConnectionsTotal.WithLabelValues(metrics.UpgradeRejectedOther).Inc()
 		return
 	}
+	m.ConnectionsTotal.WithLabelValues(metrics.UpgradeAccepted).Inc()
 
 	keepAlive := r.URL.Query().Get("keepAlive") == "true"
 
@@ -295,6 +359,7 @@ func serveWS(
 		MaxBufferedBytes: cfg.MaxBufferedBytes,
 		SendChanCapacity: 128,
 		WriteWait:        10 * time.Second,
+		Metrics:          deps.Metrics,
 	}, log)
 
 	hub.Add(conn)

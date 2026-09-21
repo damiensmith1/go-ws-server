@@ -10,7 +10,10 @@ import (
 	"time"
 
 	"github.com/alicebob/miniredis/v2"
+	"github.com/prometheus/client_golang/prometheus/testutil"
 	"github.com/redis/go-redis/v9"
+
+	"github.com/damiensmith1/go-ws-server/internal/metrics"
 )
 
 func quietLogger() *slog.Logger {
@@ -254,5 +257,48 @@ func TestHandleTopic_BuffersMidReplayAndDeliversRest(t *testing.T) {
 	// encodes once and shares the slice.
 	if string(live1.Snapshot()[0]) != string(live2.Snapshot()[0]) {
 		t.Fatal("live subscribers received differing frames")
+	}
+}
+
+func TestHandleTopic_RecordsFanoutMetrics(t *testing.T) {
+	m := metrics.New()
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mr.Close)
+	pub := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	sub := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { pub.Close(); sub.Close() })
+	b := New(pub, sub, fakeBroadcast{}, Config{StreamMaxLength: 100, Metrics: m}, quietLogger())
+
+	live, replaying := &fakeSub{}, &fakeSub{}
+	b.AddLocalSubscription("t", live)
+	b.AddLocalSubscription("t", replaying)
+
+	if got := testutil.ToFloat64(m.LocalSubscriptions); got != 2 {
+		t.Fatalf("got %v subscriptions, want 2", got)
+	}
+
+	b.mu.Lock()
+	b.replay[replayKey{replaying, "t"}] = &replayState{buffering: true, seen: map[string]bool{}}
+	b.mu.Unlock()
+
+	payload, _ := json.Marshal(wireTopicPayload{StreamID: "1-0", Data: json.RawMessage(`{}`)})
+	b.handleTopic("t", string(payload))
+
+	if got := testutil.ToFloat64(m.FanoutBuffered); got != 1 {
+		t.Fatalf("got %v buffered, want 1", got)
+	}
+	if got := testutil.CollectAndCount(m.FanoutDuration); got != 1 {
+		t.Fatalf("fan-out duration not observed")
+	}
+
+	// Removing a subscription must give the gauge its slot back, and doing
+	// it twice must not double-count.
+	b.RemoveLocalSubscription("t", live)
+	b.RemoveLocalSubscription("t", live)
+	if got := testutil.ToFloat64(m.LocalSubscriptions); got != 1 {
+		t.Fatalf("got %v subscriptions after removal, want 1", got)
 	}
 }
