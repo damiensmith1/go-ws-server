@@ -13,6 +13,18 @@ import (
 	"time"
 )
 
+// Version is the wire-protocol version this server speaks.
+//
+// A frame may carry "version". Absent means Version, so every client
+// written before versioning existed keeps working unchanged. A frame
+// naming a version this server does not implement is rejected with an
+// error that states the supported range, which is how a client discovers
+// the mismatch instead of having its fields silently misread.
+const (
+	Version    = 1
+	MinVersion = 1
+)
+
 // Inbound message types.
 const (
 	TypeSubscribe   = "subscribe"
@@ -61,6 +73,12 @@ type Envelope struct {
 	LockType string          `json:"lockType,omitempty"`
 	Since    json.RawMessage `json:"since,omitempty"`
 	ReqID    string          `json:"reqID,omitempty"`
+
+	// Version is the wire-protocol version this frame is written against.
+	// A pointer so that absent is distinguishable from 0: absent means
+	// Version, while an explicit 0 is a client naming a version that never
+	// existed and is rejected.
+	Version *int `json:"version,omitempty"`
 }
 
 type JobRetryPolicy struct {
@@ -141,6 +159,9 @@ func ParseValidUntil(s string) (time.Time, bool, error) {
 func Validate(env *Envelope) error {
 	if env.Type == "" {
 		return errors.New("Message must have a type.")
+	}
+	if v := env.Version; v != nil && (*v < MinVersion || *v > Version) {
+		return fmt.Errorf("Unsupported protocol version %d. This server supports %d to %d.", *v, MinVersion, Version)
 	}
 	switch env.Type {
 	case TypeLockTopic, TypeUnlockTopic, TypeRenewLock:

@@ -164,3 +164,41 @@ func TestValidateNewVerbs(t *testing.T) {
 		t.Fatalf("listSubscriptions rejected: %v", err)
 	}
 }
+
+func TestProtocolVersionNegotiation(t *testing.T) {
+	v := func(n int) *int { return &n }
+
+	tests := []struct {
+		name    string
+		version *int
+		wantErr bool
+	}{
+		// Absent must keep working: every client written before
+		// versioning existed omits the field.
+		{"absent is the current version", nil, false},
+		{"current version is accepted", v(Version), false},
+
+		// An explicit 0 is a client naming a version that never existed,
+		// which is why Version is a pointer rather than an int.
+		{"zero is rejected", v(0), true},
+		{"future version is rejected", v(Version + 1), true},
+		{"negative is rejected", v(-1), true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := Validate(&Envelope{Type: TypeSubscribe, Topic: "t", Version: tc.version})
+			if tc.wantErr && err == nil {
+				t.Fatal("want rejection")
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("want acceptance, got %v", err)
+			}
+			// The error must state the range, or a client has no way to
+			// learn what this server actually speaks.
+			if tc.wantErr && !strings.Contains(err.Error(), "supports") {
+				t.Fatalf("error %q does not state the supported range", err)
+			}
+		})
+	}
+}

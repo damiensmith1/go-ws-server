@@ -304,6 +304,20 @@ ws://localhost:8080/ws?token=<jwt>&keepAlive=true                   # JWT mode
 
 ## Message Protocol
 
+Every inbound frame may carry a `version`:
+
+```json
+{ "type": "subscribe", "topic": "chat", "version": 1 }
+```
+
+Omitting it means the current version, so clients written before
+versioning keep working. A frame naming a version this server does not
+implement is rejected with an error stating the supported range, rather
+than having its fields silently misread — which is the migration path a
+future wire change needs.
+
+Current version: **1**. Supported: **1 to 1**.
+
 All messages are JSON. The server replies with `{"type":"success", "reqID": "...", "message": "..."}` on success or `{"type":"error", "reqID": "...", "message": "..."}` on failure. The optional `reqID` round-trips so clients can correlate replies.
 
 ### Subscribe / Unsubscribe
