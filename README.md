@@ -470,6 +470,16 @@ Fans out to every socket on every instance that's connected with the same `userK
 { "type": "removeJob", "jobId": "uniqueJobId" }
 ```
 
+## Load testing
+
+`cmd/wsload` generates load and reports delivery latency, throughput and
+loss. Measured baseline on a single M2 with Redis on loopback: **250,000
+deliveries with no loss at p50 2.5ms** (500 subscribers, 200 publishes/s),
+and **1,000,000 deliveries with no loss** under an unthrottled burst,
+where the cost shows up as latency (p50 2.75s) rather than drops.
+
+Full method, numbers and caveats: [docs/load-testing.md](docs/load-testing.md).
+
 ## Scaling
 
 The server is stateless. Run as many instances as you like behind any TCP/HTTP load balancer that supports WebSocket upgrade. The shared Redis is the only coordination point:
