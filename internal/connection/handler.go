@@ -9,12 +9,12 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/damiensmith1/go-ws-server/internal/authz"
-	"github.com/damiensmith1/go-ws-server/internal/bus"
-	"github.com/damiensmith1/go-ws-server/internal/metrics"
-	"github.com/damiensmith1/go-ws-server/internal/protocol"
+	"github.com/damiensmith1/go-ws-server/authz"
+	"github.com/damiensmith1/go-ws-server/bus"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
 	"github.com/damiensmith1/go-ws-server/internal/redisx"
+	"github.com/damiensmith1/go-ws-server/metrics"
+	"github.com/damiensmith1/go-ws-server/protocol"
 )
 
 // Deps is the bundle of dependencies a connection needs to dispatch

@@ -11,7 +11,7 @@ import (
 
 	"github.com/gorilla/websocket"
 
-	"github.com/damiensmith1/go-ws-server/internal/metrics"
+	"github.com/damiensmith1/go-ws-server/metrics"
 )
 
 // TestWriterDrainsBeforeClose is the regression test for graceful

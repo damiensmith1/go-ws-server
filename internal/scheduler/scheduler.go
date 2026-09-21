@@ -27,10 +27,10 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/damiensmith1/go-ws-server/internal/metrics"
-	"github.com/damiensmith1/go-ws-server/internal/protocol"
 	"github.com/damiensmith1/go-ws-server/internal/redisx"
 	"github.com/damiensmith1/go-ws-server/internal/ssrf"
+	"github.com/damiensmith1/go-ws-server/metrics"
+	"github.com/damiensmith1/go-ws-server/protocol"
 )
 
 // Config configures the scheduler instance.

@@ -19,16 +19,16 @@ import (
 	"github.com/gorilla/websocket"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/damiensmith1/go-ws-server/internal/auth"
-	"github.com/damiensmith1/go-ws-server/internal/authz"
-	"github.com/damiensmith1/go-ws-server/internal/bus"
+	"github.com/damiensmith1/go-ws-server/auth"
+	"github.com/damiensmith1/go-ws-server/authz"
+	"github.com/damiensmith1/go-ws-server/bus"
 	"github.com/damiensmith1/go-ws-server/internal/config"
 	"github.com/damiensmith1/go-ws-server/internal/connection"
-	"github.com/damiensmith1/go-ws-server/internal/metrics"
 	"github.com/damiensmith1/go-ws-server/internal/ratelimit"
 	"github.com/damiensmith1/go-ws-server/internal/redisx"
 	"github.com/damiensmith1/go-ws-server/internal/scheduler"
 	"github.com/damiensmith1/go-ws-server/internal/ssrf"
+	"github.com/damiensmith1/go-ws-server/metrics"
 )
 
 // App holds every long-lived resource. New constructs it; Run blocks

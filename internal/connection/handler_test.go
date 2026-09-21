@@ -8,9 +8,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus/testutil"
 
-	"github.com/damiensmith1/go-ws-server/internal/authz"
-	"github.com/damiensmith1/go-ws-server/internal/metrics"
-	"github.com/damiensmith1/go-ws-server/internal/protocol"
+	"github.com/damiensmith1/go-ws-server/authz"
+	"github.com/damiensmith1/go-ws-server/metrics"
+	"github.com/damiensmith1/go-ws-server/protocol"
 )
 
 // env.Type comes straight from the client, so it must never reach a label

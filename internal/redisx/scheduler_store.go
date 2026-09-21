@@ -9,7 +9,7 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/damiensmith1/go-ws-server/internal/protocol"
+	"github.com/damiensmith1/go-ws-server/protocol"
 )
 
 // SchedulerSetKey is the Redis sorted-set holding pending jobs. Score = the

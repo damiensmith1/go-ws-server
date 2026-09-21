@@ -37,8 +37,8 @@ import (
 
 	"github.com/redis/go-redis/v9"
 
-	"github.com/damiensmith1/go-ws-server/internal/metrics"
-	"github.com/damiensmith1/go-ws-server/internal/protocol"
+	"github.com/damiensmith1/go-ws-server/metrics"
+	"github.com/damiensmith1/go-ws-server/protocol"
 )
 
 const (
