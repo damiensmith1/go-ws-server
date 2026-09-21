@@ -85,6 +85,35 @@ func originChecker(allowed []string, log *slog.Logger) func(*http.Request) bool 
 // metricsServer builds the /metrics listener. It is deliberately separate
 // from the websocket server: the websocket port is usually public, and
 // process and Go runtime internals should not be.
+// readyHandler reports whether this instance can actually serve traffic.
+//
+// /healthz answers "the process is up", which an orchestrator can get from
+// the TCP connect alone. /readyz answers the question that decides routing:
+// is Redis reachable? Every meaningful operation this server performs —
+// fan-out, replay, presence, locks, scheduling — is a Redis round trip, so
+// an instance whose Redis is gone is a black hole that still accepts
+// sockets. Pinging on each probe rather than caching a background result
+// keeps the answer honest at the moment it is asked; the probe interval is
+// the orchestrator's to choose.
+func readyHandler(rdb redis.UniversalClient, timeout time.Duration, log *slog.Logger) http.HandlerFunc {
+	if timeout <= 0 {
+		timeout = config.DefaultReadinessTimeout
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		ctx, cancel := context.WithTimeout(r.Context(), timeout)
+		defer cancel()
+		if err := rdb.Ping(ctx).Err(); err != nil {
+			log.Warn("readiness probe failed", "err", err.Error())
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_, _ = w.Write([]byte("redis unavailable"))
+			return
+		}
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_, _ = w.Write([]byte("ok"))
+	}
+}
+
 func metricsServer(addr string, m *metrics.Metrics) *http.Server {
 	if addr == "" {
 		return nil
@@ -175,6 +204,7 @@ func New(cfg *config.Config, log *slog.Logger) (*App, error) {
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
+	mux.HandleFunc("/readyz", readyHandler(rdb, cfg.ReadinessTimeout, log))
 
 	if cfg.TLSEnabled() {
 		// Pre-load to fail fast on bad paths.

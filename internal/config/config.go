@@ -58,9 +58,18 @@ type Config struct {
 
 	SchedulerAllowedHosts []string
 
+	// ReadinessTimeout bounds the Redis ping behind /readyz. It must stay
+	// well under the orchestrator's probe timeout so a slow Redis surfaces
+	// as "not ready" rather than as a hung probe.
+	ReadinessTimeout time.Duration
+
 	LogLevel   string
 	InstanceID string
 }
+
+// DefaultReadinessTimeout is used when READINESS_TIMEOUT_MS is unset or
+// non-positive.
+const DefaultReadinessTimeout = 2 * time.Second
 
 // Load reads configuration from the environment, applying defaults that
 // match the TypeScript reference implementation. Returns an error only on
@@ -118,6 +127,15 @@ func Load() (*Config, error) {
 		return nil, err
 	}
 	cfg.StreamTTL = time.Duration(streamTTLSec) * time.Second
+
+	readyMs, err := getint64Or("READINESS_TIMEOUT_MS", int64(DefaultReadinessTimeout/time.Millisecond))
+	if err != nil {
+		return nil, err
+	}
+	if readyMs <= 0 {
+		readyMs = int64(DefaultReadinessTimeout / time.Millisecond)
+	}
+	cfg.ReadinessTimeout = time.Duration(readyMs) * time.Millisecond
 
 	if cfg.RateLimitMessagesPerSec, err = getintOr("RATE_LIMIT_MESSAGES_PER_SEC", 50); err != nil {
 		return nil, err

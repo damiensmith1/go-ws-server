@@ -59,6 +59,7 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `WEBSOCKET_PORT`               | `8080`  | Listen port.                                                      |
 | `ALLOWED_ORIGINS`              | —       | Comma-separated `Origin` allowlist for upgrades. Empty keeps the same-origin default; `*` allows all (dev only). |
 | `METRICS_ADDR`                 | —       | Listen address for Prometheus `/metrics`, e.g. `:9090`. Empty disables it. |
+| `READINESS_TIMEOUT_MS`         | `2000`  | Timeout for the Redis ping behind `/readyz`.                      |
 | `WEBSOCKET_TIMEOUT`            | `300000` | Idle timeout in ms.                                              |
 | `MAX_PAYLOAD_BYTES`            | `65536` | Hard limit on inbound WS frames; oversize frames close the conn.  |
 | `MAX_BUFFERED_BYTES`           | `1048576` | Per-socket outbound buffer threshold; messages drop above this. |
@@ -73,6 +74,20 @@ All config is read from environment variables. See [`.env.example`](./.env.examp
 | `SCHEDULER_ALLOWED_HOSTS`      | —       | Comma-sep allow-list for scheduler URLs. Unset = any public host. |
 | `LOG_LEVEL`                    | `info`  | slog level: `debug` `info` `warn` `error`.                        |
 | `INSTANCE_ID`                  | random  | Identifies this instance for distributed job claims.              |
+
+## Health endpoints
+
+| Path | Port | Meaning |
+| --- | --- | --- |
+| `/healthz` | `WEBSOCKET_PORT` | Liveness. Always `200 ok` while the process is running. Use it to decide whether to restart the container. |
+| `/readyz`  | `WEBSOCKET_PORT` | Readiness. Pings Redis and returns `503 redis unavailable` when it does not answer within `READINESS_TIMEOUT_MS`. Use it to decide whether to route traffic. |
+| `/metrics` | `METRICS_ADDR`   | Prometheus exposition. Separate listener, not exposed to websocket clients. |
+
+The distinction matters: every operation this server performs — fan-out,
+replay, presence, locks, scheduling — is a Redis round trip. An instance
+that has lost Redis still accepts sockets and still answers `/healthz`,
+so without `/readyz` an orchestrator will keep routing clients to a
+black hole.
 
 ## Authentication
 

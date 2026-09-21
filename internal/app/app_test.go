@@ -7,6 +7,10 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/alicebob/miniredis/v2"
+	"github.com/redis/go-redis/v9"
 
 	"github.com/damiensmith1/go-ws-server/internal/metrics"
 )
@@ -91,4 +95,52 @@ func TestMetricsServer(t *testing.T) {
 	if rec.Code != 404 {
 		t.Fatalf("/ws on the metrics listener: status %d, want 404", rec.Code)
 	}
+}
+
+func TestReadyHandler(t *testing.T) {
+	newProbe := func(t *testing.T) (redis.UniversalClient, *miniredis.Miniredis) {
+		t.Helper()
+		mr := miniredis.RunT(t)
+		return redis.NewClient(&redis.Options{Addr: mr.Addr()}), mr
+	}
+
+	t.Run("ready when redis answers", func(t *testing.T) {
+		rdb, _ := newProbe(t)
+		rec := httptest.NewRecorder()
+		readyHandler(rdb, time.Second, quietLogger())(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+		if got := rec.Body.String(); got != "ok" {
+			t.Fatalf("body = %q, want %q", got, "ok")
+		}
+	})
+
+	// The whole point of /readyz over /healthz: an instance whose Redis is
+	// gone must stop advertising itself as routable.
+	t.Run("not ready when redis is gone", func(t *testing.T) {
+		rdb, mr := newProbe(t)
+		mr.Close()
+
+		rec := httptest.NewRecorder()
+		readyHandler(rdb, time.Second, quietLogger())(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+		if rec.Code != http.StatusServiceUnavailable {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusServiceUnavailable)
+		}
+		if !strings.Contains(rec.Body.String(), "redis unavailable") {
+			t.Fatalf("body = %q, want it to name the failing dependency", rec.Body.String())
+		}
+	})
+
+	t.Run("non-positive timeout falls back to the default", func(t *testing.T) {
+		rdb, _ := newProbe(t)
+		rec := httptest.NewRecorder()
+		readyHandler(rdb, 0, quietLogger())(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d", rec.Code, http.StatusOK)
+		}
+	})
 }
