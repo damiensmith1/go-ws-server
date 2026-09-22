@@ -322,3 +322,96 @@ func waitFor(t *testing.T, within time.Duration, cond func() bool) {
 	}
 	t.Fatalf("condition not met within %s", within)
 }
+
+// The nil/empty distinction has to survive JSON, not merely exist in Go.
+//
+// Recipients travels to every instance as part of the published payload,
+// so a serialisation that cannot tell "nobody" from "everybody" inverts
+// the Judge's decision. `omitempty` did exactly that: it omits an empty
+// slice and a nil one alike, and the decoder reads an absent field as
+// nil, which means deliver to all.
+func TestRecipientsSurvivesJSONRoundTrip(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      []string
+		wantNil bool
+	}{
+		{"nil means everyone", nil, true},
+		{"empty means nobody", []string{}, false},
+		{"a selection", []string{"a", "b"}, false},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			raw, err := json.Marshal(wireTopicPayload{
+				StreamID: "1-0", Data: json.RawMessage(`{}`), Recipients: tc.in,
+			})
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			var back wireTopicPayload
+			if err := json.Unmarshal(raw, &back); err != nil {
+				t.Fatalf("unmarshal: %v", err)
+			}
+			if (back.Recipients == nil) != tc.wantNil {
+				t.Fatalf("round trip of %v gave nil=%v, want nil=%v (wire: %s)",
+					tc.in, back.Recipients == nil, tc.wantNil, raw)
+			}
+			if len(back.Recipients) != len(tc.in) {
+				t.Fatalf("length changed: %d -> %d", len(tc.in), len(back.Recipients))
+			}
+		})
+	}
+
+	// A payload written before Recipients existed must still mean
+	// "everyone", so replaying old stream entries is unaffected.
+	var legacy wireTopicPayload
+	if err := json.Unmarshal([]byte(`{"streamId":"1-0","data":{}}`), &legacy); err != nil {
+		t.Fatalf("unmarshal legacy: %v", err)
+	}
+	if legacy.Recipients != nil {
+		t.Fatalf("a payload with no recipients field decoded to %v, want nil", legacy.Recipients)
+	}
+}
+
+// End to end: a Judge that selects nobody must deliver to nobody. This is
+// the behaviour the serialisation bug inverted.
+func TestJudgeSelectingNobodyDeliversToNobody(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(mr.Close)
+	pub := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	sub := redis.NewClient(&redis.Options{Addr: mr.Addr()})
+	t.Cleanup(func() { pub.Close(); sub.Close() })
+
+	m := metrics.New()
+	b := New(pub, sub, fakeBroadcast{}, Config{
+		StreamMaxLength: 100,
+		Metrics:         m,
+		Candidates:      candidates("a", "b"),
+		Judge:           deliverTo(), // selects nobody
+	}, quietLogger())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go func() { _ = b.Run(ctx) }()
+
+	subA, subB := &idSub{id: "a"}, &idSub{id: "b"}
+	b.AddLocalSubscription("alerts", subA)
+	b.AddLocalSubscription("alerts", subB)
+	time.Sleep(50 * time.Millisecond)
+
+	if _, err := b.PublishTopic(ctx, "alerts", json.RawMessage(`{"x":1}`), ""); err != nil {
+		t.Fatalf("PublishTopic: %v", err)
+	}
+	time.Sleep(300 * time.Millisecond)
+
+	if n := len(subA.Snapshot()); n != 0 {
+		t.Fatalf("subscriber a got %d messages; the Judge selected nobody", n)
+	}
+	if n := len(subB.Snapshot()); n != 0 {
+		t.Fatalf("subscriber b got %d messages; the Judge selected nobody", n)
+	}
+}

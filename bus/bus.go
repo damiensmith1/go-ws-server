@@ -230,8 +230,18 @@ type wireTopicPayload struct {
 	// Recipients is the subscriber ID allowlist decided by a Judge at
 	// publish time. Nil means "every subscriber of this topic", which is
 	// what a server with no Judge always publishes and what every message
-	// written before a Judge was configured looks like on replay.
-	Recipients []string `json:"recipients,omitempty"`
+	// written before a Judge was configured looks like on replay. An
+	// empty non-nil slice means the Judge considered the candidates and
+	// chose none.
+	//
+	// Deliberately NOT omitempty. That tag cannot tell an empty slice
+	// from a nil one, so it would omit both, and the decoder would read
+	// the omission as nil — turning "deliver to nobody" into "deliver to
+	// everybody", which is the exact inverse of the decision. Without the
+	// tag, nil marshals as null and empty marshals as [], and the two
+	// survive the round trip. A message written before this field existed
+	// still decodes to nil, so replay of old entries is unaffected.
+	Recipients []string `json:"recipients"`
 }
 
 func (b *Bus) handleTopic(topic, payload string) {
